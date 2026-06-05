@@ -11,8 +11,8 @@ All deadlines use Pacific Time.
 | Stage | Due Date | Late Policy |
 | --- | --- | --- |
 | Stage 1: Initial Agent + Workflow Design | Friday, June 5, 2026, 11:59 PM | Late submissions accepted until Sunday, June 7, 2026, 11:59 PM with a 20% penalty. |
-| Stage 2: Refined Agent + Workflow Usage | Friday, June 12, 2026, 11:59 PM | Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
-| Stage 3: Final Proposal | Friday, June 12, 2026, 11:59 PM | Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
+| Stage 2 Part 1: Refined Source Code | Friday, June 12, 2026, 11:59 PM | Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
+| Stage 2 Part 2: Final Proposal | Friday, June 12, 2026, 11:59 PM | Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
 
 Stage 1 grading is based on the submitted 5-minute presentation video. The in-person presentation is required, but it is not used as a separate grading artifact. The in-person presentation is for showing your motivation, idea, and goal, and for exchanging feedback with classmates.
 
@@ -21,8 +21,8 @@ Stage 1 grading is based on the submitted 5-minute presentation video. The in-pe
 | Stage | Points | What It Evaluates |
 | --- | ---: | --- |
 | Stage 1: Initial Agent + Workflow Design | 30 | Initial agent/prototype, vibe coding demo, proposal-writing research, workflow thinking, and presentation video. |
-| Stage 2: Refined Agent + Workflow Usage | 20 | Evidence that the refined agent/workflow was used to generate, revise, and evaluate proposal content. |
-| Stage 3: Final Proposal | 50 | Quality of the submitted `proposal.pdf`, including format, figure, logic, novelty, method, evaluation, feasibility, and writing. |
+| Stage 2 Part 1: Refined Source Code | 20 | Quality and completeness of the submitted source code for the refined agent or workflow. |
+| Stage 2 Part 2: Final Proposal | 50 | Quality of the submitted `proposal.pdf`, including format, figure, logic, novelty, method, evaluation, feasibility, and writing. |
 
 ## Stage 1 Summary: Initial Agent + Workflow Design, 30 Points
 
@@ -34,17 +34,16 @@ Stage 1 grading is based on the submitted 5-minute presentation video. The in-pe
 | Initial agent/prototype | 5 | Vibe-coded demo or prototype shows the workflow idea in action. |
 | Stage 1 presentation video | 5 | 5-minute video clearly communicates design rationale, sources, demo, and planned refinements. |
 
-## Stage 2 Summary: Refined Agent + Workflow Usage, 20 Points
+## Stage 2 Part 1 Summary: Refined Source Code, 20 Points
 
 | Criterion | Points | Evidence |
 | --- | ---: | --- |
-| Refined workflow or agent improvement | 5 | The Stage 1 workflow/agent is improved in a meaningful way. |
-| Evidence of using the workflow | 5 | Transcript, screenshots, logs, or demo show proposal content was produced through the workflow or agent. |
-| Iterative refinement | 4 | There is at least one visible feedback, critique, or revision loop. |
-| Workflow evaluation and critique | 4 | Workflow checks requirement coverage or proposal quality, identifies weak claims or missing logic, and suggests actionable revisions. |
-| Responsible AI use and reproducibility | 2 | `AI_USAGE.md` records tools, model calls, prompts or payloads, human edits, failures, and checks. |
+| Meaningful refinement | 6 | The Stage 1 workflow or agent is improved in a meaningful way. |
+| Implementation completeness | 6 | Submitted source code implements the main refined workflow behavior. |
+| Code organization and clarity | 4 | Source code is understandable, organized, and reviewable. |
+| Proposal-workflow alignment | 4 | Source code reflects proposal-writing requirements such as framing, novelty, method, evaluation, or revision. |
 
-## Stage 3 Summary: Final Proposal, 50 Points
+## Stage 2 Part 2 Summary: Final Proposal, 50 Points
 
 | Criterion | Points |
 | --- | ---: |
@@ -100,43 +99,37 @@ Bonus points are subjective and discretionary. They are awarded for work that is
 - 2: Video is difficult to follow or mostly shows UI without design reasoning.
 - 0: Missing video or recording.
 
-## Detailed Stage 2 Rubric: Refined Agent + Workflow Usage
+## Detailed Stage 2 Part 1 Rubric: Refined Source Code
 
-### 1. Refined Workflow Or Agent Improvement: 5 Points
+### 1. Meaningful Refinement: 6 Points
 
-- 5: The refined agent/workflow makes a meaningful improvement beyond Stage 1, such as better state schema, better source handling, better revision cards, better rubric parsing, or better evaluation.
+- 6: The refined agent/workflow makes a meaningful improvement beyond Stage 1, such as better state schema, better source handling, better revision cards, better rubric parsing, or better evaluation.
 - 4: The refined version improves the baseline but the improvement is narrow.
 - 2: Changes are mostly cosmetic or only lightly adjust prompts.
 - 0: No meaningful refinement beyond Stage 1.
 
-### 2. Evidence Of Using The Workflow: 5 Points
+### 2. Implementation Completeness: 6 Points
 
-- 5: Submission includes clear run evidence such as transcript, screenshots, logs, or demo showing the workflow producing proposal content.
-- 4: Evidence shows most workflow steps but misses one important transition.
-- 2: Evidence is partial and does not clearly show how proposal content was produced.
-- 0: No evidence that the workflow or agent was used.
+- 6: Source code implements the main refined workflow behavior and includes the key components needed to review the agent or workflow.
+- 4: Source code implements the main idea but one important component is incomplete or hard to inspect.
+- 2: Source code is present but mostly skeletal, static, or disconnected from the stated workflow.
+- 0: No usable source code is submitted.
 
-### 3. Iterative Refinement: 4 Points
+### 3. Code Organization And Clarity: 4 Points
 
-- 4: At least one complete refinement loop is shown: draft or state, critique, feedback or decision, revision, and improved result.
-- 3: Revision is shown, but the before/after improvement is not fully explained.
-- 1: There is a small edit or rerun, but no meaningful critique or revision loop.
-- 0: No revision loop.
+- 4: Code is organized, readable, and easy to review.
+- 3: Code is mostly understandable but has some confusing structure or naming.
+- 1: Code is difficult to follow or scattered across unclear files.
+- 0: Code cannot be meaningfully reviewed.
 
-### 4. Workflow Evaluation And Critique: 4 Points
+### 4. Proposal-Workflow Alignment: 4 Points
 
-- 4: Workflow checks proposal requirement coverage or proposal quality, identifies weak or unsupported claims, missing logic, evaluation risks, and actionable revision priorities. Evidence can appear in logs, screenshots, demo video, generated artifacts, or written notes.
-- 3: Workflow includes useful critique but misses one important area such as requirement coverage, unsupported claims, or revision priorities.
-- 2: Critique is mostly generic or not clearly tied to proposal content.
-- 0: No meaningful evaluation or critique.
+- 4: Source code clearly supports proposal-writing needs such as framing, novelty, method, evaluation, feasibility, source handling, or revision.
+- 3: Source code supports proposal writing but misses one important requirement area.
+- 2: Source code is only loosely connected to proposal-writing needs.
+- 0: Source code does not reflect the proposal workflow.
 
-### 5. Responsible AI Use And Reproducibility: 2 Points
-
-- 2: `AI_USAGE.md` records tools, models, prompts or request payloads, model responses or summaries, human edits, failures, and checks.
-- 1: AI usage is acknowledged only briefly.
-- 0: No AI usage documentation.
-
-## Detailed Stage 3 Rubric: Final Proposal
+## Detailed Stage 2 Part 2 Rubric: Final Proposal
 
 The proposal is graded as a final PDF. The source file is checked for reproducibility, but the PDF is the official proposal artifact.
 
@@ -201,6 +194,6 @@ The proposal is graded as a final PDF. The source file is checked for reproducib
 ## Common Deductions
 
 - Unsupported claims are stated as facts: deduct up to 3 points.
-- Proposal does not match the submitted workflow or usage evidence: deduct up to 5 points.
+- Stage 2 Part 1 source code is missing or unrelated to the project: deduct up to 5 points.
 - Figure is unreadable in the PDF: score at most 3 for the figure criterion.
 - Missing references or assumptions section: deduct up to 2 points.

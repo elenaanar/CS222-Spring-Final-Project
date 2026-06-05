@@ -1,10 +1,10 @@
-# Stage 3: Final Proposal
+# Stage 2 Part 2: Final Proposal
 
-Stage 3 evaluates the final proposal itself. The proposal should read like a research proposal, not a short course implementation report.
+Stage 2 Part 2 evaluates the final proposal itself. The proposal should read like a research proposal, not a short course implementation report.
 
 ## Due Date
 
-Stage 3 is due Friday, June 12, 2026, 11:59 PM Pacific Time.
+Stage 2 Part 2 is due Friday, June 12, 2026, 11:59 PM Pacific Time.
 
 Late submissions are accepted until Sunday, June 14, 2026, 11:59 PM Pacific Time with a 20% penalty.
 
@@ -32,9 +32,9 @@ The final proposal should:
 
 ## Important Rule
 
-Stage 3 is graded for proposal quality. A strong proposal can receive Stage 3 credit even if the workflow usage evidence is weak. However, Stage 2 credit requires evidence that the student's own workflow or agent helped produce or revise the proposal.
+Part 2 is graded for proposal quality. Part 1 is graded from the submitted source code for the refined agent or workflow.
 
-## Stage 3 Checklist
+## Stage 2 Part 2 Checklist
 
 - Final file is submitted as `proposal.pdf`.
 - Proposal source is included.

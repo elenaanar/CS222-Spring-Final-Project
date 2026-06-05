@@ -30,7 +30,7 @@ At minimum, explain:
 - the main workflow stages;
 - what the agent does automatically and where the student gives feedback;
 - how the workflow improves proposal quality over time;
-- what artifact the workflow produces for Stage 2 or Stage 3.
+- what artifact the workflow produces for Stage 2 Part 1 or Stage 2 Part 2.
 
 ## Required External Research
 

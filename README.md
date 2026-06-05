@@ -1,10 +1,17 @@
-# Three-Stage Final Project: Research Proposal Agent
+# Update
+
+Stage 2 and Stage 3 have been merged into a single **Stage 2**.
+
+- **Stage 2 Part 1** now only requires source code for your refined agent or workflow. You do not need to submit `workflow_usage.md`, run logs, screenshots, transcripts, demo evidence, or `AI_USAGE.md` for Part 1.
+- **Stage 2 Part 2** is the final proposal submission: `proposal.pdf`, proposal source, references or source notes, and figure or diagram source if applicable.
+
+# Two-Stage Final Project: Research Proposal Agent
 
 ## Goal
 
 Build and evaluate a research proposal workflow. The project is not just about producing one polished PDF. It asks you to show that you understand how strong proposals are written, how an agent can support that process, and how the final proposal can be evaluated.
 
-You will complete the final project in three stages:
+You will complete the final project in two stages:
 
 1. **Stage 1: Initial Agent + Workflow Design**
    - Build an initial agent or prototype through vibe coding.
@@ -13,17 +20,13 @@ You will complete the final project in three stages:
    - Attend the mandatory in-person presentation session to show your motivation, idea, and goal.
    - A polished proposal is not required in this stage.
 
-2. **Stage 2: Refined Agent + Workflow Usage**
-   - Refine the Stage 1 agent or workflow.
-   - Show how the agent/workflow is used to generate, revise, and evaluate proposal content.
-   - Submit usage evidence such as logs, transcripts, screenshots, and review artifacts.
-
-3. **Stage 3: Final Proposal**
-   - Submit the final `proposal.pdf`.
+2. **Stage 2: Refined Agent + Final Proposal**
+   - **Part 1: Source Code.** Refine the Stage 1 agent or workflow and submit the source code.
+   - **Part 2: Final Proposal.** Submit the final `proposal.pdf`.
    - The proposal is graded separately for research proposal quality.
    - The proposal should not be framed as a short course implementation report; the course deadline and the proposed research timeline are separate.
 
-If you use vibe coding only to directly produce a proposal, you can receive Stage 3 proposal credit. However, Stage 2 credit requires evidence that your own workflow or agent guided the proposal creation process.
+Part 1 credit is based on the submitted source code for your refined agent or workflow. You do not need to submit workflow usage evidence. Part 2 credit is based on the final proposal quality.
 
 ## Deadlines And Submission Requirements
 
@@ -32,8 +35,8 @@ All deadlines use Pacific Time.
 | Stage | Due Date | Submit | Notes |
 | --- | --- | --- | --- |
 | Stage 1: Initial Agent + Workflow Design | Friday, June 5, 2026, 11:59 PM | 5-minute presentation video, initial agent/prototype artifact, optional screenshots or interaction trace. | Stage 1 is graded from the video. The in-person presentation is mandatory but not separately graded; it is for showing motivation, ideas, goals, and peer feedback. Late submissions accepted until Sunday, June 7, 2026, 11:59 PM with a 20% penalty. |
-| Stage 2: Refined Agent + Workflow Usage | Friday, June 12, 2026, 11:59 PM | Refined agent/workflow, `workflow_usage.md`, run evidence, `AI_USAGE.md`. | Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
-| Stage 3: Final Proposal | Friday, June 12, 2026, 11:59 PM | `proposal.pdf`, proposal source, references or source notes, figure/diagram source if applicable. | Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
+| Stage 2 Part 1: Refined Source Code | Friday, June 12, 2026, 11:59 PM | Source code for the refined agent or workflow. | Part 1 does not require `workflow_usage.md`, run logs, screenshots, transcripts, demo evidence, or `AI_USAGE.md`. Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
+| Stage 2 Part 2: Final Proposal | Friday, June 12, 2026, 11:59 PM | `proposal.pdf`, proposal source, references or source notes, figure/diagram source if applicable. | The proposal is graded for research proposal quality. Late submissions accepted until Sunday, June 14, 2026, 11:59 PM with a 20% penalty. |
 
 ## Optional Starter App
 
@@ -95,20 +98,17 @@ Details: [docs/stage_1_workflow_design.md](docs/stage_1_workflow_design.md)
 
 ## Stage 2 Deliverables
 
-Stage 2 focuses on refined agent behavior and workflow usage evidence.
+Stage 2 has two parts: refined source code and the final proposal.
+
+### Part 1: Refined Source Code
 
 Submit:
 
-- refined agent implementation or reproducible workflow artifact;
-- `workflow_usage.md`;
-- run transcript, screenshots, logs, or demo;
-- `AI_USAGE.md`;
+- source code for your refined agent or workflow.
 
-Details: [docs/stage_2_workflow_usage.md](docs/stage_2_workflow_usage.md)
+### Part 2: Final Proposal
 
-## Stage 3 Deliverables
-
-Stage 3 focuses on final proposal quality.
+Part 2 focuses on final proposal quality.
 
 Submit:
 
@@ -138,8 +138,8 @@ Bonus: up to 5 subjective points for unusually impressive work.
 | Stage | Points | What It Evaluates |
 | --- | ---: | --- |
 | Stage 1: Initial Agent + Workflow Design | 30 | Initial agent/prototype, vibe coding demo, proposal-writing research, workflow thinking, and presentation. |
-| Stage 2: Refined Agent + Workflow Usage | 20 | Evidence that the refined agent/workflow was used to generate, revise, and evaluate proposal content. |
-| Stage 3: Final Proposal | 50 | Quality of the submitted `proposal.pdf`, including format, figure, logic, novelty, method, evaluation, feasibility, and writing. |
+| Stage 2 Part 1: Refined Source Code | 20 | Quality and completeness of the submitted source code for the refined agent or workflow. |
+| Stage 2 Part 2: Final Proposal | 50 | Quality of the submitted `proposal.pdf`, including format, figure, logic, novelty, method, evaluation, feasibility, and writing. |
 
 Detailed grading: [docs/grading_rubric.md](docs/grading_rubric.md)
 
@@ -148,11 +148,10 @@ Detailed grading: [docs/grading_rubric.md](docs/grading_rubric.md)
 ```text
 .
 ├── README.md
-├── workflow_usage.md
 ├── proposal.pdf
 ├── proposal.tex
-├── AI_USAGE.md
-├── evidence/
+├── references-or-source-notes/
+├── figure-or-diagram-source/
 └── source-code-or-workflow/
 ```
 
@@ -160,6 +159,6 @@ Detailed grading: [docs/grading_rubric.md](docs/grading_rubric.md)
 
 Stage 1 asks: **What is your initial agent and proposal-writing workflow idea?**
 
-Stage 2 asks: **Did you refine and actually use that agent/workflow to produce proposal artifacts?**
+Stage 2 Part 1 asks: **Did you refine the agent/workflow and submit its source code?**
 
-Stage 3 asks: **Is the final proposal itself strong?**
+Stage 2 Part 2 asks: **Is the final proposal itself strong?**
