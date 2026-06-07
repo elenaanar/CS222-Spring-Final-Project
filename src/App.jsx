@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  BookOpen,
   CheckCircle2,
   ClipboardCheck,
   Download,
@@ -94,6 +95,8 @@ function App() {
   const [memoryReady, setMemoryReady] = useState(false);
   const [literature, setLiterature] = useState(EMPTY_LITERATURE);
   const [selectedPaperIds, setSelectedPaperIds] = useState([]);
+  const [selectedPapersOpen, setSelectedPapersOpen] = useState(false);
+  const [activeSelectedPaperId, setActiveSelectedPaperId] = useState('');
 
   const matrixStats = useMemo(() => {
     const rows = result?.complianceMatrix || [];
@@ -107,6 +110,14 @@ function App() {
   const currentDecision = decisions[decisionIndex] || null;
   const currentQuestion = questions[0];
   const selectedPaperCount = selectedPaperIds.length;
+  const selectedPapers = useMemo(() => {
+    const idSet = new Set(selectedPaperIds);
+
+    return (literature.papers || [])
+      .filter((paper) => idSet.has(paperStableId(paper)))
+      .sort((a, b) => Number(b.relevanceScore || 0) - Number(a.relevanceScore || 0));
+  }, [literature.papers, selectedPaperIds]);
+  const activeSelectedPaper = selectedPapers.find((paper) => paperStableId(paper) === activeSelectedPaperId) || selectedPapers[0] || null;
 
   useEffect(() => {
     loadSavedMemory({ silent: true });
@@ -118,6 +129,18 @@ function App() {
       if (pdfUrl) URL.revokeObjectURL(pdfUrl);
     };
   }, [pdfUrl]);
+
+  useEffect(() => {
+    if (!selectedPapers.length) {
+      setSelectedPapersOpen(false);
+      setActiveSelectedPaperId('');
+      return;
+    }
+
+    if (!selectedPapers.some((paper) => paperStableId(paper) === activeSelectedPaperId)) {
+      setActiveSelectedPaperId(paperStableId(selectedPapers[0]));
+    }
+  }, [selectedPapers, activeSelectedPaperId]);
 
   useEffect(() => {
     if (!memoryReady) return;
@@ -350,6 +373,32 @@ function App() {
 
       return next;
     });
+  }
+
+  function selectAllPapers() {
+    const allIds = (literature.papers || []).map((paper) => paperStableId(paper));
+    setSelectedPaperIds(allIds);
+    if (allIds.length) {
+      setActiveSelectedPaperId(allIds[0]);
+    }
+    setRunLog((current) => [...current, logEntry('Explore', `Selected all ${allIds.length} papers.`)]);
+  }
+
+  function deselectAllPapers() {
+    setSelectedPaperIds([]);
+    setRunLog((current) => [...current, logEntry('Explore', 'Cleared all selected papers.')]);
+  }
+
+  function openSelectedPapersModal() {
+    if (!selectedPapers.length) return;
+    setSelectedPapersOpen(true);
+    if (!activeSelectedPaperId) {
+      setActiveSelectedPaperId(paperStableId(selectedPapers[0]));
+    }
+  }
+
+  function closeSelectedPapersModal() {
+    setSelectedPapersOpen(false);
   }
 
   function downloadLatex() {
@@ -606,9 +655,41 @@ function App() {
 
               <section className="literature-inline">
                 <PanelHeader title="Literature Explorer" meta={`${selectedPaperCount} selected`} />
+                <button
+                  className="selected-papers-bar"
+                  type="button"
+                  onClick={openSelectedPapersModal}
+                  disabled={!selectedPaperCount}
+                >
+                  <span>Selected Papers Workspace</span>
+                  <strong>{selectedPaperCount}</strong>
+                  <small>{selectedPaperCount ? 'Open overlay reader' : 'Select papers to enable'}</small>
+                </button>
                 {literature.papers.length ? (
                   <>
                     <div className="literature-summary literature-inline-card">
+                      <div className="literature-actions">
+                        <button
+                          className="secondary icon-button literature-action-icon"
+                          type="button"
+                          onClick={selectAllPapers}
+                          disabled={!literature.papers.length || selectedPaperCount === literature.papers.length}
+                          title="Select all papers"
+                          aria-label="Select all papers"
+                        >
+                          <CheckCircle2 size={16} aria-hidden="true" />
+                        </button>
+                        <button
+                          className="secondary icon-button literature-action-icon"
+                          type="button"
+                          onClick={deselectAllPapers}
+                          disabled={!selectedPaperCount}
+                          title="Deselect all papers"
+                          aria-label="Deselect all papers"
+                        >
+                          <RefreshCw size={16} aria-hidden="true" />
+                        </button>
+                      </div>
                       <span>
                         Queries: {literature.queries.join(' | ')}
                       </span>
@@ -647,11 +728,13 @@ function App() {
                             </div>
                             <div className="deck-actions">
                               <button
-                                className={isSelected ? 'secondary accepted' : 'secondary'}
+                                className={isSelected ? 'secondary accepted icon-button paper-read-icon' : 'secondary icon-button paper-read-icon'}
                                 type="button"
                                 onClick={() => togglePaperSelection(paper)}
+                                title={isSelected ? 'Selected for reading' : 'Select for reading'}
+                                aria-label={isSelected ? 'Selected for reading' : 'Select for reading'}
                               >
-                                {isSelected ? 'Selected' : 'Select For Reading'}
+                                {isSelected ? <CheckCircle2 size={16} aria-hidden="true" /> : <BookOpen size={16} aria-hidden="true" />}
                               </button>
                             </div>
                           </article>
@@ -830,6 +913,82 @@ function App() {
               {renderArtifact(activeTab, result, pdfUrl)}
             </section>
           </div>
+
+          {selectedPapersOpen ? (
+            <div className="modal-overlay" role="presentation" onClick={closeSelectedPapersModal}>
+              <section
+                className="selected-papers-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Selected papers workspace"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <header className="selected-papers-modal-header">
+                  <h2>Selected Papers Workspace</h2>
+                  <button className="secondary" type="button" onClick={closeSelectedPapersModal}>
+                    Close
+                  </button>
+                </header>
+
+                <div className="selected-papers-modal-body">
+                  <aside className="selected-papers-list">
+                    {selectedPapers.map((paper) => {
+                      const paperKey = paperStableId(paper);
+                      const isActive = activeSelectedPaperId === paperKey;
+
+                      return (
+                        <button
+                          key={paperKey}
+                          className={isActive ? 'paper-list-item active' : 'paper-list-item'}
+                          type="button"
+                          onClick={() => setActiveSelectedPaperId(paperKey)}
+                        >
+                          <strong>{paper.title}</strong>
+                          <span>{paper.year ? `${paper.year} • ` : ''}{paper.venue || paper.source}</span>
+                        </button>
+                      );
+                    })}
+                  </aside>
+
+                  <section className="selected-paper-detail">
+                    {activeSelectedPaper ? (
+                      <>
+                        <div className="paper-headline">
+                          <a href={activeSelectedPaper.url || '#'} target="_blank" rel="noreferrer">
+                            {activeSelectedPaper.title}
+                          </a>
+                          <span className="priority medium">{activeSelectedPaper.relevanceScore || 0}</span>
+                        </div>
+                        <p className="paper-meta">
+                          {(activeSelectedPaper.authors || []).join(', ') || 'Unknown authors'}
+                          {activeSelectedPaper.year ? ` • ${activeSelectedPaper.year}` : ''}
+                          {activeSelectedPaper.venue ? ` • ${activeSelectedPaper.venue}` : ''}
+                        </p>
+                        <p>{activeSelectedPaper.summary || activeSelectedPaper.abstract || 'No summary available.'}</p>
+                        <small>{activeSelectedPaper.whyRelevant || 'Potentially relevant to your topic.'}</small>
+                        <div className="paper-tags">
+                          {(activeSelectedPaper.queryHits || []).slice(0, 4).map((query) => (
+                            <span key={`${paperStableId(activeSelectedPaper)}-${query}`}>{query}</span>
+                          ))}
+                        </div>
+                        <div className="deck-actions">
+                          <button
+                            className="secondary"
+                            type="button"
+                            onClick={() => window.open(activeSelectedPaper.url || '#', '_blank', 'noopener,noreferrer')}
+                          >
+                            Open Source
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <EmptyState text="Select a paper to inspect details." compact />
+                    )}
+                  </section>
+                </div>
+              </section>
+            </div>
+          ) : null}
 
         </section>
       </section>
