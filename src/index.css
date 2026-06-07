@@ -704,6 +704,46 @@ textarea:focus {
   color: #26363b;
 }
 
+.provider-metric {
+  position: relative;
+  overflow: hidden;
+}
+
+.provider-metric::after {
+  content: '';
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  width: 26px;
+  height: 1.35em;
+  background: linear-gradient(to right, rgba(255, 255, 255, 0), #ffffff 78%);
+  pointer-events: none;
+}
+
+.provider-value {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+
+.provider-value::-webkit-scrollbar {
+  height: 0;
+}
+
+.provider-metric:hover .provider-value,
+.provider-metric:focus-within .provider-value {
+  scrollbar-width: thin;
+}
+
+.provider-metric:hover .provider-value::-webkit-scrollbar,
+.provider-metric:focus-within .provider-value::-webkit-scrollbar {
+  height: 8px;
+}
+
 .artifact-block {
   border: 1px solid #cbd7dc;
   border-radius: 8px;
@@ -744,6 +784,65 @@ pre {
   border: 0;
   border-radius: 0 0 8px 8px;
   padding: 14px;
+}
+
+.markdown-output {
+  border: 1px solid #cbd7dc;
+  border-radius: 8px;
+  padding: 18px;
+  background: #ffffff;
+  color: #26221c;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.markdown-output>*:first-child {
+  margin-top: 0;
+}
+
+.markdown-output>*:last-child {
+  margin-bottom: 0;
+}
+
+.markdown-output h1,
+.markdown-output h2,
+.markdown-output h3,
+.markdown-output h4 {
+  margin-top: 1rem;
+  margin-bottom: 0.45rem;
+}
+
+.markdown-output p,
+.markdown-output ul,
+.markdown-output ol,
+.markdown-output blockquote {
+  margin-top: 0;
+  margin-bottom: 0.75rem;
+}
+
+.markdown-output ul,
+.markdown-output ol {
+  padding-left: 1.2rem;
+}
+
+.markdown-output code {
+  padding: 0.08rem 0.28rem;
+  border-radius: 4px;
+  background: #eff4f6;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+  font-size: 0.86em;
+}
+
+.markdown-output pre {
+  overflow-x: auto;
+  padding: 0.8rem;
+  border-radius: 8px;
+  background: #f6fafb;
+}
+
+.markdown-output pre code {
+  padding: 0;
+  background: transparent;
 }
 
 .proposal-output {
@@ -837,6 +936,7 @@ th {
 }
 
 @media (max-width: 920px) {
+
   .topbar,
   .topic-launch,
   .workflow-columns,

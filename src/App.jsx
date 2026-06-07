@@ -11,6 +11,8 @@ import {
   Send,
   Sparkles
 } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const DEFAULT_REQUIREMENTS = `Proposal must include:
 - Project title
@@ -710,9 +712,9 @@ function App() {
                   <span>Accepted</span>
                   <strong>{acceptedCount}/{PROJECT_FIELDS.length}</strong>
                 </div>
-                <div>
+                <div className="provider-metric">
                   <span>Provider</span>
-                  <strong>{result?.provider || 'waiting'}</strong>
+                  <strong className="provider-value" title={result?.provider || 'waiting'}>{result?.provider || 'waiting'}</strong>
                 </div>
               </div>
 
@@ -802,7 +804,11 @@ function renderArtifact(activeTab, result, pdfUrl) {
   }
 
   if (activeTab === 'evaluation') {
-    return <pre>{result.evaluationReport}</pre>;
+    return (
+      <div className="markdown-output">
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{result.evaluationReport || ''}</ReactMarkdown>
+      </div>
+    );
   }
 
   return <pre className="proposal-output">{result.proposalLatex}</pre>;
