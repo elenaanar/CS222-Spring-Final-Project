@@ -93,6 +93,7 @@ function App() {
   const [decisionIndex, setDecisionIndex] = useState(0);
   const [memorySavedAt, setMemorySavedAt] = useState('');
   const [memoryReady, setMemoryReady] = useState(false);
+  const [activeStage, setActiveStage] = useState(0);
   const [literature, setLiterature] = useState(EMPTY_LITERATURE);
   const [selectedPaperIds, setSelectedPaperIds] = useState([]);
   const [selectedPapersOpen, setSelectedPapersOpen] = useState(false);
@@ -110,6 +111,11 @@ function App() {
   const currentDecision = decisions[decisionIndex] || null;
   const currentQuestion = questions[0];
   const selectedPaperCount = selectedPaperIds.length;
+  const hasStructuredData = Boolean(fieldSuggestions.length || decisions.length || acceptedCount || result || literature.papers.length);
+  const hasDraftInputs = Boolean(acceptedCount || project.title);
+  const hasDraftResult = Boolean(result);
+  const maxUnlockedStage = hasDraftResult ? 4 : hasDraftInputs ? 3 : hasStructuredData ? 2 : 0;
+  const visibleStageCount = Math.min(STAGES.length, maxUnlockedStage + 2);
   const selectedPapers = useMemo(() => {
     const idSet = new Set(selectedPaperIds);
 
@@ -143,6 +149,12 @@ function App() {
   }, [selectedPapers, activeSelectedPaperId]);
 
   useEffect(() => {
+    if (activeStage > maxUnlockedStage) {
+      setActiveStage(maxUnlockedStage);
+    }
+  }, [activeStage, maxUnlockedStage]);
+
+  useEffect(() => {
     if (!memoryReady) return;
 
     if (!topicInput && !fieldSuggestions.length && !decisions.length && !result && !literature.papers.length && !selectedPaperIds.length) {
@@ -163,7 +175,8 @@ function App() {
     runLog,
     activeTab,
     suggestionIndex,
-    decisionIndex
+    decisionIndex,
+    activeStage
   ]);
 
   async function startAgent() {
@@ -210,6 +223,7 @@ function App() {
         ...current,
         logEntry('Explore', `Retrieved ${literatureData.papers?.length || 0} deduplicated papers from ${literatureData.queries?.length || 0} query rewrites.`)
       ]);
+      setActiveStage(1);
       setCustomNote('');
     } catch (requestError) {
       setError(readError(requestError));
@@ -278,6 +292,7 @@ function App() {
         logEntry('Draft', `Generated proposal using ${data.mode}.`),
         logEntry('Review', `Coverage ${countCovered(data.complianceMatrix)}/${data.complianceMatrix?.length || 0}.`)
       ]);
+      setActiveStage(4);
     } catch (requestError) {
       setError(readError(requestError));
     } finally {
@@ -355,6 +370,7 @@ function App() {
     setActiveTab('pdf');
     setSuggestionIndex(0);
     setDecisionIndex(0);
+    setActiveStage(0);
     setLiterature(EMPTY_LITERATURE);
     setSelectedPaperIds([]);
   }
@@ -447,7 +463,8 @@ function App() {
       runLog,
       activeTab,
       suggestionIndex,
-      decisionIndex
+      decisionIndex,
+      activeStage
     };
 
     localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
@@ -479,6 +496,7 @@ function App() {
       setActiveTab(snapshot.activeTab || 'pdf');
       setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
       setDecisionIndex(Number(snapshot.decisionIndex || 0));
+      setActiveStage(Number.isFinite(Number(snapshot.activeStage)) ? Number(snapshot.activeStage) : 0);
       setMemorySavedAt(snapshot.savedAt || '');
       setError('');
 
@@ -567,8 +585,14 @@ function App() {
 
 
           <div className="workflow-grid" aria-label="Workflow stages">
-            {STAGES.map(([number, title, description], index) => (
-              <article className="stage-card" key={title}>
+            {STAGES.slice(0, visibleStageCount).map(([number, title, description], index) => (
+              <button
+                className={[`stage-card`, 'stage-tab', activeStage === index ? 'stage-active' : ''].join(' ')}
+                type="button"
+                key={title}
+                onClick={() => setActiveStage(index)}
+                disabled={index > maxUnlockedStage}
+              >
                 <div className="stage-topline">
                   <span className="stage-number">{number}</span>
                   <span className={`stage-status ${stageStatus(index, fieldSuggestions, decisions, project, result)}`}>
@@ -577,342 +601,368 @@ function App() {
                 </div>
                 <h3>{title}</h3>
                 <p>{description}</p>
-              </article>
+              </button>
             ))}
           </div>
 
-          <div className="workspace-grid">
-            <section className="workspace-panel suggestions-panel">
-              <PanelHeader title="LLM Suggested Structure" meta={`${fieldSuggestions.length} fields`} />
-              {fieldSuggestions.length ? (
-                <div className="suggestion-deck">
-                  <div className="deck-progress">
-                    <span>{Math.min(suggestionIndex + 1, fieldSuggestions.length)} / {fieldSuggestions.length}</span>
-                    <strong>{acceptedSuggestionCount} accepted</strong>
+          {activeStage === 0 ? (
+            <div className="workspace-grid stage-single">
+              <section className="workspace-panel suggestions-panel">
+                <PanelHeader title="LLM Suggested Structure" meta={`${fieldSuggestions.length} fields`} />
+                {fieldSuggestions.length ? (
+                  <div className="suggestion-deck">
+                    <div className="deck-progress">
+                      <span>{Math.min(suggestionIndex + 1, fieldSuggestions.length)} / {fieldSuggestions.length}</span>
+                      <strong>{acceptedSuggestionCount} accepted</strong>
+                    </div>
+                    {currentSuggestion ? (
+                      <article className="suggestion-card active-card" key={`${currentSuggestion.field}-${currentSuggestion.value}`}>
+                        <div className="card-line">
+                          <h3>{currentSuggestion.label || labelForField(currentSuggestion.field)}</h3>
+                          <span className={`priority ${String(currentSuggestion.confidence || 'medium').toLowerCase()}`}>
+                            {currentSuggestion.confidence || 'Medium'}
+                          </span>
+                        </div>
+                        <p>{currentSuggestion.value}</p>
+                        <small>{currentSuggestion.reason}</small>
+                        <div className="deck-actions">
+                          <button
+                            className={project[currentSuggestion.field] === currentSuggestion.value ? 'secondary accepted' : 'primary'}
+                            type="button"
+                            onClick={() => acceptSuggestion(currentSuggestion)}
+                          >
+                            <CheckCircle2 size={16} aria-hidden="true" />
+                            {project[currentSuggestion.field] === currentSuggestion.value ? 'Accepted' : 'Accept and Next'}
+                          </button>
+                          <button className="secondary" type="button" onClick={skipSuggestion}>
+                            Skip
+                          </button>
+                        </div>
+                      </article>
+                    ) : null}
+                    <div className="deck-nav">
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={suggestionIndex === 0}
+                        onClick={() => setSuggestionIndex((current) => Math.max(current - 1, 0))}
+                      >
+                        Previous
+                      </button>
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={suggestionIndex >= fieldSuggestions.length - 1}
+                        onClick={() => setSuggestionIndex((current) => Math.min(current + 1, fieldSuggestions.length - 1))}
+                      >
+                        Next
+                      </button>
+                    </div>
+                    <div className="deck-strip" aria-label="Suggestion progress">
+                      {fieldSuggestions.map((suggestion, index) => (
+                        <button
+                          key={`${suggestion.field}-${index}`}
+                          className={[
+                            'deck-dot',
+                            index === suggestionIndex ? 'current' : '',
+                            project[suggestion.field] === suggestion.value ? 'done' : ''
+                          ].join(' ')}
+                          type="button"
+                          aria-label={`Open ${suggestion.label || labelForField(suggestion.field)}`}
+                          onClick={() => setSuggestionIndex(index)}
+                        />
+                      ))}
+                    </div>
                   </div>
-                  {currentSuggestion ? (
-                    <article className="suggestion-card active-card" key={`${currentSuggestion.field}-${currentSuggestion.value}`}>
-                      <div className="card-line">
-                        <h3>{currentSuggestion.label || labelForField(currentSuggestion.field)}</h3>
-                        <span className={`priority ${String(currentSuggestion.confidence || 'medium').toLowerCase()}`}>
-                          {currentSuggestion.confidence || 'Medium'}
+                ) : (
+                  <EmptyState text="Enter a rough idea, then let the model structure it." compact />
+                )}
+
+                <section className="literature-inline">
+                  <PanelHeader title="Literature Explorer" meta={`${selectedPaperCount} selected`} />
+                  <button
+                    className="selected-papers-bar"
+                    type="button"
+                    onClick={openSelectedPapersModal}
+                    disabled={!selectedPaperCount}
+                  >
+                    <span>Selected Papers Workspace</span>
+                    <strong>{selectedPaperCount}</strong>
+                    <small>{selectedPaperCount ? 'Open overlay reader' : 'Select papers to enable'}</small>
+                  </button>
+                  {literature.papers.length ? (
+                    <>
+                      <div className="literature-summary literature-inline-card">
+                        <div className="literature-actions">
+                          <button
+                            className="secondary icon-button literature-action-icon"
+                            type="button"
+                            onClick={selectAllPapers}
+                            disabled={!literature.papers.length || selectedPaperCount === literature.papers.length}
+                            title="Select all papers"
+                            aria-label="Select all papers"
+                          >
+                            <CheckCircle2 size={16} aria-hidden="true" />
+                          </button>
+                          <button
+                            className="secondary icon-button literature-action-icon"
+                            type="button"
+                            onClick={deselectAllPapers}
+                            disabled={!selectedPaperCount}
+                            title="Deselect all papers"
+                            aria-label="Deselect all papers"
+                          >
+                            <RefreshCw size={16} aria-hidden="true" />
+                          </button>
+                        </div>
+                        <span>
+                          Queries: {literature.queries.join(' | ')}
+                        </span>
+                        <span>
+                          Semantic Scholar: {literature.sourceStats?.semanticScholar || 0} | arXiv: {literature.sourceStats?.arxiv || 0}
+                        </span>
+                        <span>
+                          Deduped: {literature.dedupeStats?.unique || literature.papers.length} unique from {literature.dedupeStats?.raw || literature.papers.length} fetched
                         </span>
                       </div>
-                      <p>{currentSuggestion.value}</p>
-                      <small>{currentSuggestion.reason}</small>
-                      <div className="deck-actions">
-                        <button
-                          className={project[currentSuggestion.field] === currentSuggestion.value ? 'secondary accepted' : 'primary'}
-                          type="button"
-                          onClick={() => acceptSuggestion(currentSuggestion)}
-                        >
-                          <CheckCircle2 size={16} aria-hidden="true" />
-                          {project[currentSuggestion.field] === currentSuggestion.value ? 'Accepted' : 'Accept and Next'}
-                        </button>
-                        <button className="secondary" type="button" onClick={skipSuggestion}>
-                          Skip
-                        </button>
+
+                      <div className="literature-scroll literature-inline-card" aria-label="Retrieved papers">
+                        {literature.papers.map((paper) => {
+                          const paperKey = paperStableId(paper);
+                          const isSelected = selectedPaperIds.includes(paperKey);
+
+                          return (
+                            <article className="paper-card" key={paperKey}>
+                              <div className="paper-headline">
+                                <a href={paper.url || '#'} target="_blank" rel="noreferrer">
+                                  {paper.title}
+                                </a>
+                                <span className="priority medium">{paper.relevanceScore || 0}</span>
+                              </div>
+                              <p className="paper-meta">
+                                {(paper.authors || []).slice(0, 3).join(', ') || 'Unknown authors'}
+                                {paper.year ? ` • ${paper.year}` : ''}
+                                {paper.venue ? ` • ${paper.venue}` : ''}
+                              </p>
+                              <p>{paper.summary || paper.abstract || 'No summary available.'}</p>
+                              <small>{paper.whyRelevant || 'Potentially relevant to your topic.'}</small>
+                              <div className="paper-tags">
+                                {(paper.queryHits || []).slice(0, 3).map((query) => (
+                                  <span key={`${paperKey}-${query}`}>{query}</span>
+                                ))}
+                              </div>
+                              <div className="deck-actions">
+                                <button
+                                  className={isSelected ? 'secondary accepted icon-button paper-read-icon' : 'secondary icon-button paper-read-icon'}
+                                  type="button"
+                                  onClick={() => togglePaperSelection(paper)}
+                                  title={isSelected ? 'Selected for reading' : 'Select for reading'}
+                                  aria-label={isSelected ? 'Selected for reading' : 'Select for reading'}
+                                >
+                                  {isSelected ? <CheckCircle2 size={16} aria-hidden="true" /> : <BookOpen size={16} aria-hidden="true" />}
+                                </button>
+                              </div>
+                            </article>
+                          );
+                        })}
                       </div>
-                    </article>
-                  ) : null}
-                  <div className="deck-nav">
-                    <button
-                      className="secondary"
-                      type="button"
-                      disabled={suggestionIndex === 0}
-                      onClick={() => setSuggestionIndex((current) => Math.max(current - 1, 0))}
-                    >
-                      Previous
-                    </button>
-                    <button
-                      className="secondary"
-                      type="button"
-                      disabled={suggestionIndex >= fieldSuggestions.length - 1}
-                      onClick={() => setSuggestionIndex((current) => Math.min(current + 1, fieldSuggestions.length - 1))}
-                    >
-                      Next
-                    </button>
-                  </div>
-                  <div className="deck-strip" aria-label="Suggestion progress">
-                    {fieldSuggestions.map((suggestion, index) => (
+                    </>
+                  ) : (
+                    <EmptyState text="Structure a topic to retrieve and rank related papers." compact />
+                  )}
+                </section>
+              </section>
+            </div>
+          ) : null}
+
+          {activeStage === 1 ? (
+            <div className="workspace-grid stage-single">
+              <section className="workspace-panel decisions-panel">
+                <PanelHeader title="Decision Needed" meta={`${decisions.length} open`} />
+                {decisions.length ? (
+                  <div className="decision-deck">
+                    <div className="deck-progress">
+                      <span>{Math.min(decisionIndex + 1, decisions.length)} / {decisions.length}</span>
+                      <strong>{decisions.length} open</strong>
+                    </div>
+                    {currentDecision ? (
+                      <article className="decision-card active-card" key={currentDecision.id}>
+                        <h3>{currentDecision.title}</h3>
+                        <p>{currentDecision.question}</p>
+                        <div className="option-stack">
+                          {currentDecision.options.map((option) => (
+                            <button
+                              className="option-button"
+                              key={`${currentDecision.id}-${option.label}`}
+                              type="button"
+                              onClick={() => chooseOption(currentDecision, option)}
+                            >
+                              <strong>{option.label}</strong>
+                              <span>{option.value}</span>
+                              <small>{option.rationale}</small>
+                            </button>
+                          ))}
+                        </div>
+                        <div className="deck-actions">
+                          <button className="secondary" type="button" onClick={skipDecision}>
+                            Skip
+                          </button>
+                        </div>
+                      </article>
+                    ) : null}
+                    <div className="deck-nav">
                       <button
-                        key={`${suggestion.field}-${index}`}
-                        className={[
-                          'deck-dot',
-                          index === suggestionIndex ? 'current' : '',
-                          project[suggestion.field] === suggestion.value ? 'done' : ''
-                        ].join(' ')}
+                        className="secondary"
                         type="button"
-                        aria-label={`Open ${suggestion.label || labelForField(suggestion.field)}`}
-                        onClick={() => setSuggestionIndex(index)}
-                      />
-                    ))}
+                        disabled={decisionIndex === 0}
+                        onClick={() => setDecisionIndex((current) => Math.max(current - 1, 0))}
+                      >
+                        Previous
+                      </button>
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={decisionIndex >= decisions.length - 1}
+                        onClick={() => setDecisionIndex((current) => Math.min(current + 1, decisions.length - 1))}
+                      >
+                        Next
+                      </button>
+                    </div>
+                    <div className="deck-strip" aria-label="Decision progress">
+                      {decisions.map((decision, index) => (
+                        <button
+                          key={`${decision.id}-${index}`}
+                          className={['deck-dot', index === decisionIndex ? 'current' : ''].join(' ')}
+                          type="button"
+                          aria-label={`Open ${decision.title}`}
+                          onClick={() => setDecisionIndex(index)}
+                        />
+                      ))}
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <EmptyState text="Enter a rough idea, then let the model structure it." compact />
-              )}
-
-              <section className="literature-inline">
-                <PanelHeader title="Literature Explorer" meta={`${selectedPaperCount} selected`} />
-                <button
-                  className="selected-papers-bar"
-                  type="button"
-                  onClick={openSelectedPapersModal}
-                  disabled={!selectedPaperCount}
-                >
-                  <span>Selected Papers Workspace</span>
-                  <strong>{selectedPaperCount}</strong>
-                  <small>{selectedPaperCount ? 'Open overlay reader' : 'Select papers to enable'}</small>
-                </button>
-                {literature.papers.length ? (
-                  <>
-                    <div className="literature-summary literature-inline-card">
-                      <div className="literature-actions">
-                        <button
-                          className="secondary icon-button literature-action-icon"
-                          type="button"
-                          onClick={selectAllPapers}
-                          disabled={!literature.papers.length || selectedPaperCount === literature.papers.length}
-                          title="Select all papers"
-                          aria-label="Select all papers"
-                        >
-                          <CheckCircle2 size={16} aria-hidden="true" />
-                        </button>
-                        <button
-                          className="secondary icon-button literature-action-icon"
-                          type="button"
-                          onClick={deselectAllPapers}
-                          disabled={!selectedPaperCount}
-                          title="Deselect all papers"
-                          aria-label="Deselect all papers"
-                        >
-                          <RefreshCw size={16} aria-hidden="true" />
-                        </button>
-                      </div>
-                      <span>
-                        Queries: {literature.queries.join(' | ')}
-                      </span>
-                      <span>
-                        Semantic Scholar: {literature.sourceStats?.semanticScholar || 0} | arXiv: {literature.sourceStats?.arxiv || 0}
-                      </span>
-                      <span>
-                        Deduped: {literature.dedupeStats?.unique || literature.papers.length} unique from {literature.dedupeStats?.raw || literature.papers.length} fetched
-                      </span>
-                    </div>
-
-                    <div className="literature-scroll literature-inline-card" aria-label="Retrieved papers">
-                      {literature.papers.map((paper) => {
-                        const paperKey = paperStableId(paper);
-                        const isSelected = selectedPaperIds.includes(paperKey);
-
-                        return (
-                          <article className="paper-card" key={paperKey}>
-                            <div className="paper-headline">
-                              <a href={paper.url || '#'} target="_blank" rel="noreferrer">
-                                {paper.title}
-                              </a>
-                              <span className="priority medium">{paper.relevanceScore || 0}</span>
-                            </div>
-                            <p className="paper-meta">
-                              {(paper.authors || []).slice(0, 3).join(', ') || 'Unknown authors'}
-                              {paper.year ? ` • ${paper.year}` : ''}
-                              {paper.venue ? ` • ${paper.venue}` : ''}
-                            </p>
-                            <p>{paper.summary || paper.abstract || 'No summary available.'}</p>
-                            <small>{paper.whyRelevant || 'Potentially relevant to your topic.'}</small>
-                            <div className="paper-tags">
-                              {(paper.queryHits || []).slice(0, 3).map((query) => (
-                                <span key={`${paperKey}-${query}`}>{query}</span>
-                              ))}
-                            </div>
-                            <div className="deck-actions">
-                              <button
-                                className={isSelected ? 'secondary accepted icon-button paper-read-icon' : 'secondary icon-button paper-read-icon'}
-                                type="button"
-                                onClick={() => togglePaperSelection(paper)}
-                                title={isSelected ? 'Selected for reading' : 'Select for reading'}
-                                aria-label={isSelected ? 'Selected for reading' : 'Select for reading'}
-                              >
-                                {isSelected ? <CheckCircle2 size={16} aria-hidden="true" /> : <BookOpen size={16} aria-hidden="true" />}
-                              </button>
-                            </div>
-                          </article>
-                        );
-                      })}
-                    </div>
-                  </>
                 ) : (
-                  <EmptyState text="Structure a topic to retrieve and rank related papers." compact />
+                  <EmptyState text="No major decision is open. Review the accepted state or draft the proposal." compact />
+                )}
+
+                <section className="custom-note">
+                  <h3>Extra Note</h3>
+                  <textarea
+                    value={customNote}
+                    onChange={(event) => setCustomNote(event.target.value)}
+                    placeholder={currentQuestion?.question || 'Add a detail the options missed.'}
+                  />
+                  <button className="primary" disabled={!customNote.trim() || status !== 'idle'} onClick={submitCustomNote} type="button">
+                    {status === 'answering' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
+                    Let LLM Integrate
+                  </button>
+                </section>
+              </section>
+            </div>
+          ) : null}
+
+          {activeStage === 2 ? (
+            <div className="workspace-grid stage-single">
+              <section className="workspace-panel state-panel">
+                <PanelHeader title="Accepted Project State" meta={`${acceptedCount}/${PROJECT_FIELDS.length} ready`} />
+                <label>
+                  Project Title
+                  <input value={project.title} onChange={(event) => updateProjectField('title', event.target.value)} />
+                </label>
+                {PROJECT_FIELDS.map(([field, label]) => (
+                  <label key={field}>
+                    {label}
+                    <textarea value={project[field] || ''} onChange={(event) => updateProjectField(field, event.target.value)} />
+                  </label>
+                ))}
+                <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
+                  {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
+                  Generate Proposal
+                </button>
+              </section>
+            </div>
+          ) : null}
+
+          {activeStage === 3 ? (
+            <div className="workspace-grid stage-single">
+              <section className="workspace-panel state-panel">
+                <PanelHeader title="Draft Proposal" meta={project.title ? 'Ready to generate' : 'Needs title'} />
+                <p className="stage-copy">Generate proposal artifacts from the assembled project state.</p>
+                <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
+                  {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
+                  Generate Proposal
+                </button>
+                {result ? <p className="stage-copy">A draft already exists. Open Review for matrix and critique outputs.</p> : null}
+              </section>
+            </div>
+          ) : null}
+
+          {activeStage === 4 ? (
+            <div className="workflow-columns">
+              <section className="workflow-panel">
+                <h2>Run Log</h2>
+                {runLog.length ? (
+                  <ol className="run-log">
+                    {runLog.map((entry) => (
+                      <li key={entry.id}>
+                        <span>{entry.stage}</span>
+                        <p>{entry.message}</p>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <EmptyState text="Run log appears after the idea is structured." compact />
                 )}
               </section>
-            </section>
 
-            <section className="workspace-panel decisions-panel">
-              <PanelHeader title="Decision Needed" meta={`${decisions.length} open`} />
-              {decisions.length ? (
-                <div className="decision-deck">
-                  <div className="deck-progress">
-                    <span>{Math.min(decisionIndex + 1, decisions.length)} / {decisions.length}</span>
-                    <strong>{decisions.length} open</strong>
-                  </div>
-                  {currentDecision ? (
-                    <article className="decision-card active-card" key={currentDecision.id}>
-                      <h3>{currentDecision.title}</h3>
-                      <p>{currentDecision.question}</p>
-                      <div className="option-stack">
-                        {currentDecision.options.map((option) => (
-                          <button
-                            className="option-button"
-                            key={`${currentDecision.id}-${option.label}`}
-                            type="button"
-                            onClick={() => chooseOption(currentDecision, option)}
-                          >
-                            <strong>{option.label}</strong>
-                            <span>{option.value}</span>
-                            <small>{option.rationale}</small>
-                          </button>
-                        ))}
-                      </div>
-                      <div className="deck-actions">
-                        <button className="secondary" type="button" onClick={skipDecision}>
-                          Skip
-                        </button>
-                      </div>
-                    </article>
-                  ) : null}
-                  <div className="deck-nav">
-                    <button
-                      className="secondary"
-                      type="button"
-                      disabled={decisionIndex === 0}
-                      onClick={() => setDecisionIndex((current) => Math.max(current - 1, 0))}
-                    >
-                      Previous
-                    </button>
-                    <button
-                      className="secondary"
-                      type="button"
-                      disabled={decisionIndex >= decisions.length - 1}
-                      onClick={() => setDecisionIndex((current) => Math.min(current + 1, decisions.length - 1))}
-                    >
-                      Next
-                    </button>
-                  </div>
-                  <div className="deck-strip" aria-label="Decision progress">
-                    {decisions.map((decision, index) => (
+              <section className="workflow-panel artifacts-panel">
+                <div className="artifact-toolbar">
+                  <nav className="tabs" aria-label="Generated artifacts">
+                    {TABS.map(([id, Icon, label]) => (
                       <button
-                        key={`${decision.id}-${index}`}
-                        className={['deck-dot', index === decisionIndex ? 'current' : ''].join(' ')}
+                        key={id}
+                        className={activeTab === id ? 'tab active' : 'tab'}
                         type="button"
-                        aria-label={`Open ${decision.title}`}
-                        onClick={() => setDecisionIndex(index)}
-                      />
+                        onClick={() => setActiveTab(id)}
+                      >
+                        <Icon size={17} aria-hidden="true" />
+                        {label}
+                      </button>
                     ))}
+                  </nav>
+                  <button className="secondary" type="button" disabled={!result?.proposalLatex} onClick={downloadLatex}>
+                    <Download size={17} aria-hidden="true" />
+                    LaTeX
+                  </button>
+                  <button
+                    className="primary"
+                    type="button"
+                    disabled={!result?.proposalLatex || status !== 'idle'}
+                    onClick={downloadPdf}
+                  >
+                    {status === 'exporting' ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <Download size={17} aria-hidden="true" />}
+                    PDF
+                  </button>
+                </div>
+
+                <div className="artifact-summary">
+                  <div>
+                    <span>Coverage</span>
+                    <strong>{matrixStats.total ? `${matrixStats.covered}/${matrixStats.total}` : '0/0'}</strong>
+                  </div>
+                  <div>
+                    <span>Accepted</span>
+                    <strong>{acceptedCount}/{PROJECT_FIELDS.length}</strong>
+                  </div>
+                  <div className="provider-metric">
+                    <span>Provider</span>
+                    <strong className="provider-value" title={result?.provider || 'waiting'}>{result?.provider || 'waiting'}</strong>
                   </div>
                 </div>
-              ) : (
-                <EmptyState text="No major decision is open. Review the accepted state or draft the proposal." compact />
-              )}
 
-              <section className="custom-note">
-                <h3>Extra Note</h3>
-                <textarea
-                  value={customNote}
-                  onChange={(event) => setCustomNote(event.target.value)}
-                  placeholder={currentQuestion?.question || 'Add a detail the options missed.'}
-                />
-                <button className="primary" disabled={!customNote.trim() || status !== 'idle'} onClick={submitCustomNote} type="button">
-                  {status === 'answering' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
-                  Let LLM Integrate
-                </button>
+                {renderArtifact(activeTab, result, pdfUrl)}
               </section>
-            </section>
-
-            <section className="workspace-panel state-panel">
-              <PanelHeader title="Accepted Project State" meta={`${acceptedCount}/${PROJECT_FIELDS.length} ready`} />
-              <label>
-                Project Title
-                <input value={project.title} onChange={(event) => updateProjectField('title', event.target.value)} />
-              </label>
-              {PROJECT_FIELDS.map(([field, label]) => (
-                <label key={field}>
-                  {label}
-                  <textarea value={project[field] || ''} onChange={(event) => updateProjectField(field, event.target.value)} />
-                </label>
-              ))}
-              <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
-                {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
-                Generate Proposal
-              </button>
-            </section>
-          </div>
-
-          <div className="workflow-columns">
-            <section className="workflow-panel">
-              <h2>Run Log</h2>
-              {runLog.length ? (
-                <ol className="run-log">
-                  {runLog.map((entry) => (
-                    <li key={entry.id}>
-                      <span>{entry.stage}</span>
-                      <p>{entry.message}</p>
-                    </li>
-                  ))}
-                </ol>
-              ) : (
-                <EmptyState text="Run log appears after the idea is structured." compact />
-              )}
-            </section>
-
-            <section className="workflow-panel artifacts-panel">
-              <div className="artifact-toolbar">
-                <nav className="tabs" aria-label="Generated artifacts">
-                  {TABS.map(([id, Icon, label]) => (
-                    <button
-                      key={id}
-                      className={activeTab === id ? 'tab active' : 'tab'}
-                      type="button"
-                      onClick={() => setActiveTab(id)}
-                    >
-                      <Icon size={17} aria-hidden="true" />
-                      {label}
-                    </button>
-                  ))}
-                </nav>
-                <button className="secondary" type="button" disabled={!result?.proposalLatex} onClick={downloadLatex}>
-                  <Download size={17} aria-hidden="true" />
-                  LaTeX
-                </button>
-                <button
-                  className="primary"
-                  type="button"
-                  disabled={!result?.proposalLatex || status !== 'idle'}
-                  onClick={downloadPdf}
-                >
-                  {status === 'exporting' ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <Download size={17} aria-hidden="true" />}
-                  PDF
-                </button>
-              </div>
-
-              <div className="artifact-summary">
-                <div>
-                  <span>Coverage</span>
-                  <strong>{matrixStats.total ? `${matrixStats.covered}/${matrixStats.total}` : '0/0'}</strong>
-                </div>
-                <div>
-                  <span>Accepted</span>
-                  <strong>{acceptedCount}/{PROJECT_FIELDS.length}</strong>
-                </div>
-                <div className="provider-metric">
-                  <span>Provider</span>
-                  <strong className="provider-value" title={result?.provider || 'waiting'}>{result?.provider || 'waiting'}</strong>
-                </div>
-              </div>
-
-              {renderArtifact(activeTab, result, pdfUrl)}
-            </section>
-          </div>
+            </div>
+          ) : null}
 
           {selectedPapersOpen ? (
             <div className="modal-overlay" role="presentation" onClick={closeSelectedPapersModal}>
