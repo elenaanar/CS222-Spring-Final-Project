@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import cors from 'cors';
 import express from 'express';
+import { retrieveLiterature } from './literatureRetriever.js';
 import { proposalLatexToPdf } from './pdfExport.js';
 import { answerAgentQuestion, generateProposal, startAgentSession } from './proposalGenerator.js';
 
@@ -67,6 +68,24 @@ app.post('/api/proposal', async (request, response) => {
   } catch (error) {
     response.status(500).json({
       error: 'Proposal generation failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post('/api/literature', async (request, response) => {
+  try {
+    const payload = request.body || {};
+
+    if (!String(payload.topic || '').trim()) {
+      response.status(400).json({ error: 'Topic is required.' });
+      return;
+    }
+
+    response.json(await retrieveLiterature(payload));
+  } catch (error) {
+    response.status(500).json({
+      error: 'Literature retrieval failed.',
       detail: error instanceof Error ? error.message : String(error)
     });
   }

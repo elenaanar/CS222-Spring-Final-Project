@@ -65,6 +65,15 @@ const TABS = [
 ];
 
 const MEMORY_KEY = 'proposal-agent-final-project-memory-v1';
+const EMPTY_LITERATURE = {
+  topic: '',
+  mode: 'idle',
+  provider: '',
+  queries: [],
+  papers: [],
+  sourceStats: { semanticScholar: 0, arxiv: 0 },
+  dedupeStats: { raw: 0, unique: 0 }
+};
 
 function App() {
   const [topicInput, setTopicInput] = useState('');
@@ -83,6 +92,8 @@ function App() {
   const [decisionIndex, setDecisionIndex] = useState(0);
   const [memorySavedAt, setMemorySavedAt] = useState('');
   const [memoryReady, setMemoryReady] = useState(false);
+  const [literature, setLiterature] = useState(EMPTY_LITERATURE);
+  const [selectedPaperIds, setSelectedPaperIds] = useState([]);
 
   const matrixStats = useMemo(() => {
     const rows = result?.complianceMatrix || [];
@@ -95,6 +106,7 @@ function App() {
   const currentSuggestion = fieldSuggestions[suggestionIndex] || null;
   const currentDecision = decisions[decisionIndex] || null;
   const currentQuestion = questions[0];
+  const selectedPaperCount = selectedPaperIds.length;
 
   useEffect(() => {
     loadSavedMemory({ silent: true });
@@ -110,7 +122,7 @@ function App() {
   useEffect(() => {
     if (!memoryReady) return;
 
-    if (!topicInput && !fieldSuggestions.length && !decisions.length && !result) {
+    if (!topicInput && !fieldSuggestions.length && !decisions.length && !result && !literature.papers.length && !selectedPaperIds.length) {
       return;
     }
 
@@ -123,6 +135,8 @@ function App() {
     decisions,
     questions,
     result,
+    literature,
+    selectedPaperIds,
     runLog,
     activeTab,
     suggestionIndex,
@@ -159,6 +173,19 @@ function App() {
       setRunLog([
         logEntry('Extract', data.runMessage || 'LLM prepared structured suggestions.'),
         logEntry('Decide', `Review ${(data.fieldSuggestions || []).length} fields and ${(data.decisions || []).length} decision card(s).`)
+      ]);
+
+      const literatureData = await postJson('/api/literature', {
+        topic: nextTopic,
+        queryCount: 3,
+        maxPerQuery: 12,
+        topPapers: 36
+      });
+      setLiterature({ ...EMPTY_LITERATURE, ...literatureData });
+      setSelectedPaperIds([]);
+      setRunLog((current) => [
+        ...current,
+        logEntry('Explore', `Retrieved ${literatureData.papers?.length || 0} deduplicated papers from ${literatureData.queries?.length || 0} query rewrites.`)
       ]);
       setCustomNote('');
     } catch (requestError) {
@@ -305,6 +332,24 @@ function App() {
     setActiveTab('pdf');
     setSuggestionIndex(0);
     setDecisionIndex(0);
+    setLiterature(EMPTY_LITERATURE);
+    setSelectedPaperIds([]);
+  }
+
+  function togglePaperSelection(paper) {
+    const paperKey = paperStableId(paper);
+
+    setSelectedPaperIds((current) => {
+      const exists = current.includes(paperKey);
+      const next = exists ? current.filter((id) => id !== paperKey) : [...current, paperKey];
+
+      setRunLog((log) => [
+        ...log,
+        logEntry('Explore', `${exists ? 'Unselected' : 'Selected'} paper: ${paper.title}.`)
+      ]);
+
+      return next;
+    });
   }
 
   function downloadLatex() {
@@ -348,6 +393,8 @@ function App() {
       decisions,
       questions,
       result: compactResult(result),
+      literature,
+      selectedPaperIds,
       runLog,
       activeTab,
       suggestionIndex,
@@ -377,6 +424,8 @@ function App() {
       setDecisions(Array.isArray(snapshot.decisions) ? snapshot.decisions : []);
       setQuestions(Array.isArray(snapshot.questions) ? snapshot.questions : []);
       setResult(snapshot.result || null);
+      setLiterature({ ...EMPTY_LITERATURE, ...(snapshot.literature || {}) });
+      setSelectedPaperIds(Array.isArray(snapshot.selectedPaperIds) ? snapshot.selectedPaperIds : []);
       setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
       setActiveTab(snapshot.activeTab || 'pdf');
       setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
@@ -554,6 +603,66 @@ function App() {
               ) : (
                 <EmptyState text="Enter a rough idea, then let the model structure it." compact />
               )}
+
+              <section className="literature-inline">
+                <PanelHeader title="Literature Explorer" meta={`${selectedPaperCount} selected`} />
+                {literature.papers.length ? (
+                  <>
+                    <div className="literature-summary literature-inline-card">
+                      <span>
+                        Queries: {literature.queries.join(' | ')}
+                      </span>
+                      <span>
+                        Semantic Scholar: {literature.sourceStats?.semanticScholar || 0} | arXiv: {literature.sourceStats?.arxiv || 0}
+                      </span>
+                      <span>
+                        Deduped: {literature.dedupeStats?.unique || literature.papers.length} unique from {literature.dedupeStats?.raw || literature.papers.length} fetched
+                      </span>
+                    </div>
+
+                    <div className="literature-scroll literature-inline-card" aria-label="Retrieved papers">
+                      {literature.papers.map((paper) => {
+                        const paperKey = paperStableId(paper);
+                        const isSelected = selectedPaperIds.includes(paperKey);
+
+                        return (
+                          <article className="paper-card" key={paperKey}>
+                            <div className="paper-headline">
+                              <a href={paper.url || '#'} target="_blank" rel="noreferrer">
+                                {paper.title}
+                              </a>
+                              <span className="priority medium">{paper.relevanceScore || 0}</span>
+                            </div>
+                            <p className="paper-meta">
+                              {(paper.authors || []).slice(0, 3).join(', ') || 'Unknown authors'}
+                              {paper.year ? ` • ${paper.year}` : ''}
+                              {paper.venue ? ` • ${paper.venue}` : ''}
+                            </p>
+                            <p>{paper.summary || paper.abstract || 'No summary available.'}</p>
+                            <small>{paper.whyRelevant || 'Potentially relevant to your topic.'}</small>
+                            <div className="paper-tags">
+                              {(paper.queryHits || []).slice(0, 3).map((query) => (
+                                <span key={`${paperKey}-${query}`}>{query}</span>
+                              ))}
+                            </div>
+                            <div className="deck-actions">
+                              <button
+                                className={isSelected ? 'secondary accepted' : 'secondary'}
+                                type="button"
+                                onClick={() => togglePaperSelection(paper)}
+                              >
+                                {isSelected ? 'Selected' : 'Select For Reading'}
+                              </button>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <EmptyState text="Structure a topic to retrieve and rank related papers." compact />
+                )}
+              </section>
             </section>
 
             <section className="workspace-panel decisions-panel">
@@ -721,6 +830,7 @@ function App() {
               {renderArtifact(activeTab, result, pdfUrl)}
             </section>
           </div>
+
         </section>
       </section>
     </main>
@@ -893,6 +1003,12 @@ function formatSavedAt(value) {
     hour: '2-digit',
     minute: '2-digit'
   });
+}
+
+function paperStableId(paper) {
+  if (paper?.paperId) return `pid:${paper.paperId}`;
+  if (paper?.doi) return `doi:${paper.doi}`;
+  return `title:${String(paper?.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
 }
 
 export default App;
