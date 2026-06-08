@@ -1,3 +1,7 @@
+function log(tag, msg) {
+  console.log(`[literature:${tag}] ${msg}`);
+}
+
 const DEFAULT_QUERY_COUNT = 3;
 const DEFAULT_MAX_PER_QUERY = 12;
 const DEFAULT_TOP_PAPERS = 36;
@@ -12,13 +16,18 @@ export async function retrieveLiterature(payload = {}) {
     const queryCount = clampNumber(payload.queryCount, 1, 5, DEFAULT_QUERY_COUNT);
     const maxPerQuery = clampNumber(payload.maxPerQuery, 10, 20, DEFAULT_MAX_PER_QUERY);
     const topPapers = clampNumber(payload.topPapers, 10, 80, DEFAULT_TOP_PAPERS);
+    log('retrieveLiterature', `topic="${topic}" | enhanceWithAI=${Boolean(payload.enhanceWithAI)} | queryCount=${queryCount} | maxPerQuery=${maxPerQuery}`);
 
     const rewrittenQueries = await rewriteQueries(topic, queryCount, Boolean(payload.enhanceWithAI));
+    log('retrieveLiterature', `queries: ${rewrittenQueries.map(q => `"${q}"`).join(' | ')}`);
     const queryResults = await Promise.all(
         rewrittenQueries.map((query) => fetchQueryPapers(query, maxPerQuery))
     );
 
+    const rawCount = queryResults.reduce((sum, r) => sum + r.papers.length, 0);
     const deduped = dedupePapers(queryResults.flatMap((result) => result.papers));
+    log('retrieveLiterature', `fetched ${rawCount} papers → ${deduped.length} unique after dedup`);
+
     const ranked = await rankAndSummarizePapers({ topic, rewrittenQueries, papers: deduped.slice(0, topPapers) });
 
     return {
@@ -38,8 +47,11 @@ export async function retrieveLiterature(payload = {}) {
 
 async function rewriteQueries(topic, count, enhanceWithAI = false) {
     if (!enhanceWithAI || !isApiReady()) {
-        return deterministicQueries(topic, count);
+        const queries = deterministicQueries(topic, count);
+        log('rewriteQueries', `deterministic | ${queries.join(' | ')}`);
+        return queries;
     }
+    log('rewriteQueries', `→ LLM query enhancement | model=${process.env.LLM_MODEL}`);
 
     const prompt = {
         topic,
@@ -61,9 +73,14 @@ async function rewriteQueries(topic, count, enhanceWithAI = false) {
         );
         const queries = Array.isArray(result.queries) ? result.queries.map(clean).filter(Boolean) : [];
         const deduped = [...new Set(queries)].slice(0, count);
-
-        return deduped.length ? deduped : deterministicQueries(topic, count);
-    } catch {
+        if (deduped.length) {
+            log('rewriteQueries', `← LLM queries: ${deduped.join(' | ')}`);
+            return deduped;
+        }
+        log('rewriteQueries', 'LLM returned empty queries, falling back to deterministic');
+        return deterministicQueries(topic, count);
+    } catch (error) {
+        log('rewriteQueries', `LLM failed (${error.message}), using deterministic`);
         return deterministicQueries(topic, count);
     }
 }
@@ -224,6 +241,7 @@ function dedupePapers(papers) {
 
 async function rankAndSummarizePapers({ topic, rewrittenQueries, papers }) {
     if (!papers.length) return [];
+    log('rankAndSummarizePapers', `${papers.length} papers | api=${isApiReady()} | model=${process.env.LLM_MODEL || 'none'}`);
 
     if (!isApiReady()) {
         return papers
@@ -311,6 +329,10 @@ async function callLlmJson(systemPrompt, payload) {
         throw new Error('LLM_MODEL is required for API-backed literature processing.');
     }
 
+    const task = payload.topic ? (payload.papers ? 'rank-papers' : 'rewrite-queries') : 'unknown';
+    log('callLlmJson', `→ LLM request | model=${model} | task=${task}`);
+    const t0 = Date.now();
+
     if (provider() === 'gemini') {
         const baseUrl = clean(process.env.LLM_API_URL) || 'https://generativelanguage.googleapis.com/v1beta';
         const endpoint = `${baseUrl.replace(/\/$/, '')}/models/${encodeURIComponent(model)}:generateContent`;
@@ -348,7 +370,9 @@ async function callLlmJson(systemPrompt, payload) {
             .filter(Boolean)
             .join('\n');
 
-        return parseJsonContent(content);
+        const parsed = parseJsonContent(content);
+        log('callLlmJson', `← LLM response | model=${model} | task=${task} | ${Date.now() - t0}ms | ${content?.length ?? 0} chars`);
+        return parsed;
     }
 
     const response = await fetch(process.env.LLM_API_URL, {
@@ -360,7 +384,7 @@ async function callLlmJson(systemPrompt, payload) {
         body: JSON.stringify({
             model,
             temperature: 0.2,
-            response_format: { type: 'json_object' },
+            max_tokens: 4096,
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: JSON.stringify(payload, null, 2) }
@@ -377,7 +401,9 @@ async function callLlmJson(systemPrompt, payload) {
         ? data.choices[0].message.content
         : JSON.stringify(data);
 
-    return parseJsonContent(content);
+    const parsed = parseJsonContent(content);
+    log('callLlmJson', `← LLM response | model=${model} | task=${task} | ${Date.now() - t0}ms | ${content?.length ?? 0} chars`);
+    return parsed;
 }
 
 function summarizeSources(queryResults) {

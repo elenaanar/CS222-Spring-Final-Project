@@ -1,3 +1,7 @@
+function log(tag, msg) {
+  console.log(`[proposal:${tag}] ${msg}`);
+}
+
 const DEFAULT_REQUIREMENTS = `Proposal must include:
 - Project title
 - Abstract
@@ -154,6 +158,7 @@ Rules:
 export async function startAgentSession(payload) {
   const project = normalizePayload(payload);
   const checklist = extractChecklist(project.requirements || DEFAULT_REQUIREMENTS);
+  log('startAgentSession', `topic="${project.title || project.topic}" | api=${Boolean(process.env.LLM_API_KEY && process.env.LLM_API_URL)}`);
 
   if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
     try {
@@ -165,6 +170,7 @@ export async function startAgentSession(payload) {
         answer: ''
       });
 
+      log('startAgentSession', `LLM ok → ${result.fieldSuggestions.length} suggestions, ${result.decisions.length} decisions`);
       return {
         ...result,
         project: keepOnlyAcceptedStartFields(project, result.project),
@@ -173,10 +179,12 @@ export async function startAgentSession(payload) {
         runMessage: `Initialized topic and prepared ${result.fieldSuggestions.length} suggested field(s) and ${result.decisions.length} decision card(s).`
       };
     } catch (error) {
+      log('startAgentSession', `LLM failed, using fallback: ${error.message}`);
       return buildStartFallback(project, checklist, error);
     }
   }
 
+  log('startAgentSession', 'no API key — using deterministic fallback');
   return buildStartFallback(project, checklist);
 }
 
@@ -185,6 +193,7 @@ export async function answerAgentQuestion(payload) {
   const checklist = extractChecklist(project.requirements || payload.requirements || DEFAULT_REQUIREMENTS);
   const activeQuestion = normalizeQuestion(payload.question);
   const answer = clean(payload.answer);
+  log('answerAgentQuestion', `integrating answer for field="${activeQuestion?.field}" answer="${answer.slice(0, 60)}..."`);
 
   if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
     try {
@@ -214,19 +223,25 @@ export async function generateProposal(payload) {
   const project = normalizePayload(payload);
   const requirements = project.requirements || DEFAULT_REQUIREMENTS;
   const checklist = extractChecklist(requirements);
+  log('generateProposal', `title="${project.title}" | api=${Boolean(process.env.LLM_API_KEY && process.env.LLM_API_URL)}`);
 
   if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
     try {
-      return await generateWithApi(project, checklist);
-    } catch {
+      const result = await generateWithApi(project, checklist);
+      log('generateProposal', `LLM ok → latex=${result.proposalLatex?.length} chars, matrix=${result.complianceMatrix?.length} rows`);
+      return result;
+    } catch (error) {
+      log('generateProposal', `LLM failed, using local fallback: ${error.message}`);
       return generateLocally(project, checklist);
     }
   }
 
+  log('generateProposal', 'no API key — using deterministic fallback');
   return generateLocally(project, checklist);
 }
 
 export async function critiqueProposal(payload) {
+  log('critiqueProposal', `title="${payload.project?.title || payload.topic}" | api=${Boolean(process.env.LLM_API_KEY && process.env.LLM_API_URL)}`);
   const project = normalizePayload(payload.project || payload);
   const checklist = extractChecklist(project.requirements || DEFAULT_REQUIREMENTS);
   const proposalLatex = clean(payload.proposalLatex);
@@ -245,6 +260,7 @@ export async function critiqueProposal(payload) {
 }
 
 export async function reviseProposalFromCritique(payload) {
+  log('reviseProposalFromCritique', `${payload.selectedCritiques?.length || 0} critiques selected, userInstruction="${(payload.userInstruction || '').slice(0, 60)}"`);
   const project = normalizePayload(payload.project || payload);
   const selectedCritiques = Array.isArray(payload.selectedCritiques) ? payload.selectedCritiques : [];
   const userInstruction = clean(payload.userInstruction);
@@ -663,11 +679,17 @@ async function generateWithApi(project, checklist) {
 }
 
 async function callModel({ systemPrompt, payload, model, temperature }) {
-  if (getProvider() === 'gemini') {
-    return callGemini({ systemPrompt, payload, model, temperature });
-  }
+  const provider = getProvider();
+  const task = payload.task || (payload.project ? 'proposal' : 'unknown');
+  log('callModel', `→ LLM request | model=${model} | provider=${provider} | task=${task}`);
+  const t0 = Date.now();
 
-  return callOpenAiCompatible({ systemPrompt, payload, model, temperature });
+  const result = provider === 'gemini'
+    ? await callGemini({ systemPrompt, payload, model, temperature })
+    : await callOpenAiCompatible({ systemPrompt, payload, model, temperature });
+
+  log('callModel', `← LLM response | model=${model} | task=${task} | ${Date.now() - t0}ms | ${result?.length ?? 0} chars`);
+  return result;
 }
 
 async function callGemini({ systemPrompt, payload, model, temperature }) {
@@ -724,6 +746,7 @@ async function callOpenAiCompatible({ systemPrompt, payload, model, temperature 
     body: JSON.stringify({
       model,
       temperature,
+      max_tokens: 4096,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: JSON.stringify(payload, null, 2) }
@@ -784,13 +807,14 @@ ${questions.length ? questions.map((question) => `- ${question}`).join('\n') : '
 }
 
 function buildLocalProposalLatex(project) {
-  const title = project.title || project.topic;
-  const problem = project.problem || 'The current problem is still underspecified and should be refined through clarifying questions.';
-  const method = project.method || 'The agent workflow will collect a rough research direction, ask targeted clarification questions, update project state, draft a research proposal, check requirements, and revise weak sections.';
-  const evaluation = project.evaluation || 'Evaluate the first and revised drafts against section coverage, missing fields, weak claims, prior-work comparison, research milestones, and proposal-specific success criteria.';
-  const timeline = project.timeline || 'Phase 1 literature and requirement review; Phase 2 workflow and method design; Phase 3 prototype or study setup; Phase 4 evaluation and analysis; Phase 5 final proposal revision and source notes.';
-  const resources = project.resources || 'This browser app, a local Node API service, an optional LLM API key, proposal-writing references, and source notes for unsupported claims.';
-  const references = project.references || 'Course proposal requirements and demo scaffold. Additional claims are treated as assumptions.';
+  const title = project.title || project.topic || 'Research Proposal';
+  const topic = project.topic || project.title || 'this research area';
+  const problem = project.problem || `The specific problem within ${topic} has not yet been fully specified. This section should describe the gap, limitation, or challenge that motivates the proposed work.`;
+  const method = project.method || `The proposed approach for ${topic} should be described here, including the key technical steps, tools, datasets, and any agent or automated workflow components.`;
+  const evaluation = project.evaluation || `Evaluation should demonstrate that the proposed approach for ${topic} improves on existing baselines or addresses the identified gap, using appropriate metrics and test conditions.`;
+  const timeline = project.timeline || 'Phase 1: literature review and problem scoping. Phase 2: method design and baseline selection. Phase 3: prototype or study implementation. Phase 4: evaluation and analysis. Phase 5: final write-up and revision.';
+  const resources = project.resources || `Relevant datasets, tools, compute resources, and prior work for ${topic}.`;
+  const references = project.references || 'Prior work citations and assumptions are to be completed during proposal refinement.';
 
   return String.raw`\documentclass[11pt]{article}
 \usepackage[margin=1in]{geometry}
@@ -805,53 +829,29 @@ function buildLocalProposalLatex(project) {
 \maketitle
 
 \begin{abstract}
-This project builds a proposal agent that turns a rough research direction into a structured research proposal. The workflow collects project intent, calls an API-backed generator when configured, produces a LaTeX proposal draft, checks requirements, and lists revision questions.
+This proposal addresses ${escapeLatex(topic)}. The following draft was generated from the current project state and should be refined with additional detail, citations, and evaluation specifics. Sections marked as assumptions require supporting evidence before submission.
 \end{abstract}
 
-\section{Motivation and Gap}
+\section{Motivation and Research Gap}
 ${latexParagraph(problem)}
 
-Students often have partial ideas but need help converting them into proposal sections with clear methods, milestones, and evaluation criteria. \textbf{Assumption:} a lightweight guided workflow is sufficient for a useful classroom demo.
-
 \section{Project Goal}
-Create a working proposal generator that can produce a LaTeX proposal, compliance matrix, evaluation report, and follow-up questions from a rough idea.
+This project aims to make a concrete contribution to ${escapeLatex(topic)} by addressing the identified gap through a well-scoped research plan with explicit milestones and evaluation criteria.
 
-\section{Method and Agent Workflow}
+\section{Method}
 ${latexParagraph(method)}
-
-\begin{enumerate}
-\item Capture topic, problem, method, timeline, evaluation plan, resources, and requirement text.
-\item Send the structured state to the local API service.
-\item Use the configured LLM API when available; otherwise use a deterministic fallback.
-\item Return LaTeX source, requirement coverage, self-evaluation, and clarification questions.
-\item Compile \texttt{proposal.tex} into \texttt{proposal.pdf} with a LaTeX engine.
-\end{enumerate}
-
-\section{Figure}
-\begin{figure}[h]
-\centering
-\fbox{\begin{minipage}{0.9\linewidth}
-\centering
-Rough idea $\rightarrow$ structured suggestions $\rightarrow$ student decisions $\rightarrow$ accepted project state $\rightarrow$ LaTeX proposal $\rightarrow$ compliance review $\rightarrow$ revised PDF
-\end{minipage}}
-\caption{Proposed workflow for turning a rough idea into a reviewed proposal artifact.}
-\end{figure}
 
 \section{Expected Results and Research Milestones}
 ${latexParagraph(timeline)}
 
-Expected result: a reproducible workflow that can start from a rough research direction and produce proposal artifacts with explicit milestones, assumptions, and review evidence.
-
 \section{Evaluation Plan}
 ${latexParagraph(evaluation)}
 
-Test cases include a complete idea, a missing-information idea, a requirement-check case, and a revision case after weak claims are flagged.
-
 \section{Risks and Mitigation}
 \begin{itemize}
-\item API key is missing: use deterministic fallback and document that mode.
-\item Generated claims are unsupported: mark them as assumptions and ask for source notes.
-\item Research scope becomes too broad: narrow the contribution, milestones, and evaluation criteria before drafting.
+\item Scope is too broad: narrow the research question to a single measurable contribution.
+\item Data or resources are unavailable: identify alternatives early and document assumptions.
+\item Claims are unsupported: mark as assumptions and add citations before submission.
 \end{itemize}
 
 \section{Resources}
@@ -959,7 +959,7 @@ function integrateAnswerLocally(project, answer, question) {
 }
 
 function buildFieldSuggestions(project) {
-  const topic = project.title || project.topic || 'the project';
+  const topic = project.title || project.topic || 'the research area';
   const suggestions = [
     {
       field: 'title',
@@ -973,50 +973,50 @@ function buildFieldSuggestions(project) {
       label: 'Problem Framing',
       value:
         project.problem ||
-        `Students or project authors have a rough idea for ${topic}, but need help turning it into a structured, rubric-aligned proposal with clear scope and evaluation.`,
-      confidence: project.problem ? 'High' : 'Medium',
-      reason: 'A proposal needs a concrete user pain point before method details are useful.'
+        `Existing work on ${topic} leaves an identifiable gap that this proposal aims to address. The specific limitation or unmet need should be stated with supporting evidence from the literature.`,
+      confidence: project.problem ? 'High' : 'Low',
+      reason: 'A proposal needs a concrete, evidence-backed motivation before method details are useful.'
     },
     {
       field: 'method',
-      label: 'Method / Agent Workflow',
+      label: 'Research Method',
       value:
         project.method ||
-        'Build an agent workflow that extracts project state from a rough idea, presents suggested fields and decision options, accepts user edits, drafts a proposal, checks requirements, and revises weak sections.',
-      confidence: project.method ? 'High' : 'Medium',
-      reason: 'The method should describe the agent process rather than only promising a final text draft.'
+        `The proposed approach will address the identified gap in ${topic} through a combination of data collection or curation, model or system design, and quantitative evaluation against relevant baselines.`,
+      confidence: project.method ? 'High' : 'Low',
+      reason: 'The method should specify inputs, outputs, key design choices, and how they connect to the research question.'
     },
     {
       field: 'evaluation',
       label: 'Evaluation Plan',
       value:
         project.evaluation ||
-        'Test complete, missing-info, requirement-check, unsupported-claim, and revision scenarios. Compare draft quality by checklist coverage, specificity, and whether weak claims are flagged.',
-      confidence: project.evaluation ? 'High' : 'Medium',
-      reason: 'The course proposal needs evidence that the workflow improves the artifact.'
+        `The proposed approach will be evaluated on appropriate metrics for ${topic}, compared against established baselines, and analyzed for failure cases and limitations.`,
+      confidence: project.evaluation ? 'High' : 'Low',
+      reason: 'Evaluation criteria should directly measure progress on the stated problem.'
     },
     {
       field: 'timeline',
       label: 'Research Milestones',
       value:
         project.timeline ||
-        'Phase 1: proposal-writing research and prior-work review. Phase 2: workflow and method design. Phase 3: prototype or study setup. Phase 4: evaluation and unsupported-claim review. Phase 5: final proposal revision and source notes.',
+        'Phase 1: literature review and problem scoping. Phase 2: method design and baseline selection. Phase 3: prototype or study implementation. Phase 4: evaluation and analysis. Phase 5: final write-up and revision.',
       confidence: project.timeline ? 'High' : 'Medium',
       reason: 'Research milestones help reviewers judge feasibility, expected outcomes, and scope.'
     },
     {
       field: 'resources',
       label: 'Resources',
-      value: project.resources || 'React, Vite, Node, Gemini API, local fallback mode, sample research ideas, and course requirements.',
-      confidence: project.resources ? 'High' : 'Medium',
-      reason: 'Resource notes make the API-backed workflow reproducible.'
+      value: project.resources || `Relevant datasets, compute resources, tools, and prior work needed to execute the proposed research on ${topic}.`,
+      confidence: project.resources ? 'High' : 'Low',
+      reason: 'Naming specific resources makes the proposal more credible and helps identify risks early.'
     },
     {
       field: 'references',
       label: 'Sources / Assumptions',
-      value: project.references || 'Course proposal requirements, the provided demo workflow, and explicit assumptions for unsupported claims.',
-      confidence: project.references ? 'High' : 'Medium',
-      reason: 'Source notes prevent the proposal from inventing unsupported claims.'
+      value: project.references || 'Key prior work citations and explicit assumptions for any claims that lack supporting evidence.',
+      confidence: project.references ? 'High' : 'Low',
+      reason: 'Source notes prevent the proposal from relying on unsupported claims.'
     }
   ];
 
@@ -1024,7 +1024,7 @@ function buildFieldSuggestions(project) {
 }
 
 function buildDecisionCards(project) {
-  const topic = project.title || project.topic || 'this project';
+  const topic = project.title || project.topic || 'this research area';
 
   return [
     {
@@ -1034,45 +1034,42 @@ function buildDecisionCards(project) {
       question: 'Which problem framing should the proposal emphasize?',
       options: [
         {
-          label: 'Rubric alignment',
-          value: `Students have rough ideas for ${topic}, but struggle to translate them into proposal sections that satisfy the course rubric.`,
-          rationale: 'Best when the project is mainly about proposal structure and grading requirements.'
+          label: 'Gap in existing work',
+          value: `Prior work on ${topic} has made progress but leaves an identifiable gap — a population, condition, modality, or scenario that has not been adequately studied or addressed.`,
+          rationale: 'Best when the proposal is motivated by what the literature is missing.'
         },
         {
-          label: 'Revision quality',
-          value: `Students can produce a first draft for ${topic}, but need help identifying weak claims, missing evidence, and unclear evaluation plans before submission.`,
-          rationale: 'Best when the agent focuses on critique and revision.'
+          label: 'Technical limitation',
+          value: `Existing methods for ${topic} have known technical limitations — in accuracy, scalability, generalizability, or robustness — that a new approach could address with a concrete improvement.`,
+          rationale: 'Best when the proposal argues that current techniques are insufficient.'
         },
         {
-          label: 'Scope control',
-          value: `Students often choose research directions that are too broad or underspecified, so they need a workflow that narrows the idea into a credible proposal with explicit milestones and evaluation criteria.`,
-          rationale: 'Best when feasibility, milestones, and research scope are the main risks.'
+          label: 'Underexplored application',
+          value: `The techniques relevant to ${topic} are established in adjacent domains but have not been seriously applied or evaluated in this specific context, leaving practical questions unanswered.`,
+          rationale: 'Best when the novelty is in applying known methods to a new setting.'
         }
       ]
     },
     {
       id: 'method-style',
-      title: 'Choose The Agent Method',
+      title: 'Choose The Research Method',
       field: 'method',
-      question: 'What should the core agent workflow optimize for?',
+      question: 'What research method should the proposal use?',
       options: [
         {
-          label: 'Structured extraction',
-          value:
-            'The agent extracts project fields from a rough idea, shows suggested data for user approval, and only asks clarifying questions when required fields remain uncertain.',
-          rationale: 'Best for reducing manual prompting.'
+          label: 'Build and evaluate a system',
+          value: `Design and implement a system or model for ${topic}, then evaluate it against baselines on a defined benchmark or dataset using quantitative metrics.`,
+          rationale: 'Best when the contribution is a working technical artifact.'
         },
         {
-          label: 'Rubric-first drafting',
-          value:
-            'The agent parses requirements into a checklist, maps each project field to required proposal sections, drafts the proposal, and produces a compliance matrix.',
-          rationale: 'Best when grading coverage is the main concern.'
+          label: 'Empirical study',
+          value: `Conduct a controlled empirical study on ${topic} — collecting or curating data, applying existing methods, and analyzing results to answer a specific research question.`,
+          rationale: 'Best when the contribution is insight or a benchmark rather than a new model.'
         },
         {
-          label: 'Critique and revise',
-          value:
-            'The agent drafts quickly, judges the draft for missing sections and weak claims, proposes targeted revisions, and lets the user accept or edit changes.',
-          rationale: 'Best for a visible revision loop.'
+          label: 'Survey and comparative analysis',
+          value: `Systematically survey the literature on ${topic}, identify key methods and their trade-offs, and produce a comparative analysis with a clear taxonomy or evaluation framework.`,
+          rationale: 'Best when the contribution is a structured synthesis of existing work.'
         }
       ]
     },
@@ -1080,22 +1077,22 @@ function buildDecisionCards(project) {
       id: 'evaluation-choice',
       title: 'Choose Evaluation Evidence',
       field: 'evaluation',
-      question: 'How should the demo prove the workflow is useful?',
+      question: 'How will the proposal demonstrate a meaningful contribution?',
       options: [
         {
-          label: 'Before / after',
-          value: 'Compare a rough initial draft with the revised proposal on required-section coverage, specificity, and unresolved assumptions.',
-          rationale: 'Simple and convincing for a classroom demo.'
+          label: 'Quantitative metrics',
+          value: `Evaluate the proposed approach for ${topic} using quantitative metrics (e.g., accuracy, F1, BLEU, RMSE) against established baselines on a public or collected dataset.`,
+          rationale: 'Best for system-building or model-training contributions.'
         },
         {
-          label: 'Scenario tests',
-          value: 'Run normal, missing-information, requirement-check, unsupported-claim, and revision scenarios, then report pass/fail outcomes.',
-          rationale: 'Best for demonstrating agent behavior across cases.'
+          label: 'User or human-subject study',
+          value: `Conduct a user study or human evaluation to assess the quality, usefulness, or perceived improvement of the proposed approach to ${topic} relative to a comparison condition.`,
+          rationale: 'Best when the contribution is an interface, tool, or subjective quality measure.'
         },
         {
-          label: 'Human review',
-          value: 'Have the student review whether each suggested field is accurate, useful, and ready for the final proposal before export.',
-          rationale: 'Best when student ownership is important.'
+          label: 'Ablation and analysis',
+          value: `Evaluate the proposed approach through ablation studies and error analysis to isolate which design choices contribute to performance and where the method falls short on ${topic}.`,
+          rationale: 'Best when understanding the contribution mechanistically is as important as the overall score.'
         }
       ]
     }

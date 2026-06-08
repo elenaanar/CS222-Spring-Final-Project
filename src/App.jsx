@@ -285,18 +285,14 @@ function App() {
       });
 
       setProject({ ...EMPTY_PROJECT, ...data.project });
-      setFieldSuggestions(data.fieldSuggestions || []);
-      setDecisions(data.decisions || []);
       setQuestions(data.questions || []);
-      setSuggestionIndex(0);
-      setDecisionIndex(0);
       setRunLog((current) => [
         ...current,
-        logEntry('Update', data.runMessage || 'Integrated custom note.'),
-        logEntry('Decide', `Refreshed ${(data.fieldSuggestions || []).length} suggested field(s).`)
+        logEntry('Update', data.runMessage || 'Integrated additional input into project state.')
       ]);
       setCustomNote('');
       clearArtifacts();
+      setActiveStage(2);
     } catch (requestError) {
       setError(readError(requestError));
     } finally {
@@ -607,15 +603,19 @@ function App() {
       return;
     }
 
+    console.log('[applyReviewChanges] starting | selectedCritiques:', selectedCritiques.length, '| userInstruction:', reviewCycle.userInstruction.slice(0, 60));
     setReviewStatus('revising');
     setError('');
 
     try {
+      console.log('[applyReviewChanges] → calling /api/review/revise');
       const revision = await postJson('/api/review/revise', {
         project,
         selectedCritiques,
         userInstruction: reviewCycle.userInstruction
       });
+      console.log('[applyReviewChanges] ← revision ok | mode:', revision.mode, '| changes:', revision.appliedChanges?.length);
+
       const revisedProject = { ...EMPTY_PROJECT, ...(revision.project || project) };
 
       setProject(revisedProject);
@@ -624,12 +624,17 @@ function App() {
         userInstruction: ''
       }));
 
+      console.log('[applyReviewChanges] → calling /api/proposal to regenerate');
       const nextResult = await postJson('/api/proposal', {
         ...revisedProject,
         topic: revisedProject.topic || revisedProject.title,
         requirements: DEFAULT_REQUIREMENTS
       });
+      console.log('[applyReviewChanges] ← proposal ok | mode:', nextResult.mode, '| latex chars:', nextResult.proposalLatex?.length);
+
+      console.log('[applyReviewChanges] → exporting PDF');
       const nextPdfUrl = await exportPdfUrl(nextResult.proposalLatex, revisedProject.title || 'proposal');
+      console.log('[applyReviewChanges] ← PDF exported');
 
       setResult(nextResult);
       updatePdfUrl(nextPdfUrl);
@@ -639,7 +644,9 @@ function App() {
         logEntry('Draft', `Regenerated proposal after review cycle using ${nextResult.mode}.`)
       ]);
       setActiveTab('evaluation');
+      console.log('[applyReviewChanges] done');
     } catch (requestError) {
+      console.error('[applyReviewChanges] ERROR:', requestError.message, requestError);
       setError(readError(requestError));
     } finally {
       setReviewStatus('idle');
