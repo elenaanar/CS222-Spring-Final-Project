@@ -10,7 +10,8 @@ import {
   Play,
   RefreshCw,
   Send,
-  Sparkles
+  Sparkles,
+  X
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -70,6 +71,7 @@ const EMPTY_LITERATURE = {
   topic: '',
   mode: 'idle',
   provider: '',
+  queriesEnhanced: false,
   queries: [],
   papers: [],
   sourceStats: { semanticScholar: 0, arxiv: 0 },
@@ -132,6 +134,7 @@ function App() {
   const currentDecision = decisions[decisionIndex] || null;
   const currentQuestion = questions[0];
   const selectedPaperCount = selectedPaperIds.length;
+  const allPapersSelected = literature.papers.length > 0 && selectedPaperCount === literature.papers.length;
   const hasStructuredData = Boolean(fieldSuggestions.length || decisions.length || acceptedCount || result || literature.papers.length);
   const hasDraftInputs = Boolean(acceptedCount || project.title);
   const hasDraftResult = Boolean(result);
@@ -905,51 +908,29 @@ function App() {
                       <span>Selected Papers Workspace</span>
                       <strong>{selectedPaperCount}</strong>
                     </div>
-                    <button
-                      className="secondary"
-                      type="button"
-                      onClick={openSelectedPapersModal}
-                      disabled={!selectedPaperCount}
-                    >
-                      Open Reader
-                    </button>
+                    <div className="selected-papers-bar-actions">
+                      <button
+                        className={`secondary icon-button selected-papers-bar-toggle${allPapersSelected ? ' bar-toggle-active' : ''}`}
+                        type="button"
+                        onClick={allPapersSelected ? deselectAllPapers : selectAllPapers}
+                        disabled={!literature.papers.length}
+                        title={allPapersSelected ? 'Deselect all papers' : 'Select all papers'}
+                        aria-label={allPapersSelected ? 'Deselect all papers' : 'Select all papers'}
+                      >
+                        {allPapersSelected ? <X size={16} aria-hidden="true" /> : <CheckCircle2 size={16} aria-hidden="true" />}
+                      </button>
+                      <button
+                        className="secondary"
+                        type="button"
+                        onClick={openSelectedPapersModal}
+                        disabled={!selectedPaperCount}
+                      >
+                        Open Reader
+                      </button>
+                    </div>
                   </div>
                   {literature.papers.length ? (
                     <>
-                      <div className="literature-summary literature-inline-card">
-                        <div className="literature-actions">
-                          <button
-                            className="secondary icon-button literature-action-icon"
-                            type="button"
-                            onClick={selectAllPapers}
-                            disabled={!literature.papers.length || selectedPaperCount === literature.papers.length}
-                            title="Select all papers"
-                            aria-label="Select all papers"
-                          >
-                            <CheckCircle2 size={16} aria-hidden="true" />
-                          </button>
-                          <button
-                            className="secondary icon-button literature-action-icon"
-                            type="button"
-                            onClick={deselectAllPapers}
-                            disabled={!selectedPaperCount}
-                            title="Deselect all papers"
-                            aria-label="Deselect all papers"
-                          >
-                            <RefreshCw size={16} aria-hidden="true" />
-                          </button>
-                        </div>
-                        <span>
-                          Queries: {literature.queries.join(' | ')}
-                        </span>
-                        <span>
-                          Semantic Scholar: {literature.sourceStats?.semanticScholar || 0} | arXiv: {literature.sourceStats?.arxiv || 0}
-                        </span>
-                        <span>
-                          Deduped: {literature.dedupeStats?.unique || literature.papers.length} unique from {literature.dedupeStats?.raw || literature.papers.length} fetched
-                        </span>
-                      </div>
-
                       <div className="literature-scroll literature-inline-card" aria-label="Retrieved papers">
                         {literature.papers.map((paper) => {
                           const paperKey = paperStableId(paper);
@@ -970,25 +951,39 @@ function App() {
                               </p>
                               <p>{paper.summary || paper.abstract || 'No summary available.'}</p>
                               <small>{paper.whyRelevant || 'Potentially relevant to your topic.'}</small>
-                              <div className="paper-tags">
-                                {(paper.queryHits || []).slice(0, 3).map((query) => (
-                                  <span key={`${paperKey}-${query}`}>{query}</span>
-                                ))}
-                              </div>
+                              {literature.queriesEnhanced ? (
+                                <div className="paper-tags">
+                                  {(paper.queryHits || []).slice(0, 3).map((query) => (
+                                    <span key={`${paperKey}-${query}`}>{queryTagLabel(query, literature.topic)}</span>
+                                  ))}
+                                </div>
+                              ) : null}
                               <div className="deck-actions">
                                 <button
-                                  className={isSelected ? 'secondary accepted icon-button paper-read-icon' : 'secondary icon-button paper-read-icon'}
+                                  className={`secondary icon-button paper-read-icon${isSelected ? ' paper-read-selected' : ''}`}
                                   type="button"
                                   onClick={() => togglePaperSelection(paper)}
                                   title={isSelected ? 'Selected for reading' : 'Select for reading'}
                                   aria-label={isSelected ? 'Selected for reading' : 'Select for reading'}
                                 >
-                                  {isSelected ? <CheckCircle2 size={16} aria-hidden="true" /> : <BookOpen size={16} aria-hidden="true" />}
+                                  <BookOpen size={16} aria-hidden="true" />
                                 </button>
                               </div>
                             </article>
                           );
                         })}
+                      </div>
+
+                      <div className="literature-summary literature-inline-card">
+                        <span>
+                          Queries: {literature.queries.join(' | ')}
+                        </span>
+                        <span>
+                          Semantic Scholar: {literature.sourceStats?.semanticScholar || 0} | arXiv: {literature.sourceStats?.arxiv || 0}
+                        </span>
+                        <span>
+                          Deduped: {literature.dedupeStats?.unique || literature.papers.length} unique from {literature.dedupeStats?.raw || literature.papers.length} fetched
+                        </span>
                       </div>
                     </>
                   ) : (
@@ -1371,11 +1366,13 @@ function App() {
                         </p>
                         <p>{activeSelectedPaper.summary || activeSelectedPaper.abstract || 'No summary available.'}</p>
                         <small>{activeSelectedPaper.whyRelevant || 'Potentially relevant to your topic.'}</small>
-                        <div className="paper-tags">
-                          {(activeSelectedPaper.queryHits || []).slice(0, 4).map((query) => (
-                            <span key={`${paperStableId(activeSelectedPaper)}-${query}`}>{query}</span>
-                          ))}
-                        </div>
+                        {literature.queriesEnhanced ? (
+                          <div className="paper-tags">
+                            {(activeSelectedPaper.queryHits || []).slice(0, 4).map((query) => (
+                              <span key={`${paperStableId(activeSelectedPaper)}-${query}`}>{queryTagLabel(query, literature.topic)}</span>
+                            ))}
+                          </div>
+                        ) : null}
                         <div className="deck-actions">
                           <button
                             className="secondary"
@@ -1567,6 +1564,15 @@ function formatSavedAt(value) {
     hour: '2-digit',
     minute: '2-digit'
   });
+}
+
+function queryTagLabel(query, topic) {
+  const t = (topic || '').trim();
+  const q = (query || '').trim();
+  if (!t) return q;
+  if (q.toLowerCase() === t.toLowerCase()) return 'direct';
+  if (q.toLowerCase().startsWith(t.toLowerCase() + ' ')) return q.slice(t.length + 1);
+  return q;
 }
 
 function paperStableId(paper) {

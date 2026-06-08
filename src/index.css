@@ -746,11 +746,28 @@ textarea:focus {
   font-size: 0.88rem;
 }
 
+.selected-papers-bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.selected-papers-bar .secondary:not(:disabled):hover,
+.bar-toggle-active {
+  border-color: #8db7a9 !important;
+  background: #eaf4f0 !important;
+  color: #28584b !important;
+}
+
 .selected-papers-bar .secondary:not(:disabled):hover {
-  border-color: #8db7a9;
-  background: #eaf4f0;
-  color: #28584b;
   transform: translateY(-1px);
+}
+
+.paper-read-selected,
+.paper-read-icon:not(:disabled):hover {
+  border-color: #8db7a9 !important;
+  background: #eaf4f0 !important;
+  color: #28584b !important;
 }
 
 .literature-inline-card {
@@ -789,7 +806,7 @@ textarea:focus {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  max-height: 620px;
+  max-height: 950px;
   overflow-y: auto;
   overflow-x: hidden;
   padding: 10px;

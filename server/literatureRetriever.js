@@ -25,6 +25,7 @@ export async function retrieveLiterature(payload = {}) {
         mode: isApiReady() ? 'api' : 'local-fallback',
         provider: process.env.LLM_API_URL || 'local-fallback',
         topic,
+        queriesEnhanced: Boolean(payload.enhanceWithAI) && isApiReady(),
         queries: rewrittenQueries,
         papers: ranked,
         sourceStats: summarizeSources(queryResults),
