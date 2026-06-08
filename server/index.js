@@ -4,6 +4,7 @@ import express from 'express';
 import { retrieveLiterature } from './literatureRetriever.js';
 import { proposalLatexToPdf } from './pdfExport.js';
 import { answerAgentQuestion, generateProposal, startAgentSession } from './proposalGenerator.js';
+import { detectResearchGaps } from './researchGapDetector.js';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -86,6 +87,29 @@ app.post('/api/literature', async (request, response) => {
   } catch (error) {
     response.status(500).json({
       error: 'Literature retrieval failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post('/api/research-gaps', async (request, response) => {
+  try {
+    const payload = request.body || {};
+
+    if (!String(payload.topic || '').trim()) {
+      response.status(400).json({ error: 'Topic is required.' });
+      return;
+    }
+
+    if (!Array.isArray(payload.papers) || !payload.papers.length) {
+      response.status(400).json({ error: 'papers is required.' });
+      return;
+    }
+
+    response.json(await detectResearchGaps(payload));
+  } catch (error) {
+    response.status(500).json({
+      error: 'Research gap detection failed.',
       detail: error instanceof Error ? error.message : String(error)
     });
   }

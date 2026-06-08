@@ -76,6 +76,15 @@ const EMPTY_LITERATURE = {
   dedupeStats: { raw: 0, unique: 0 }
 };
 
+const EMPTY_GAP_RESULT = {
+  topic: '',
+  paperCount: 0,
+  paperAnalyses: [],
+  explorationChecks: [],
+  rankedGaps: [],
+  runMessage: ''
+};
+
 function App() {
   const [topicInput, setTopicInput] = useState('');
   const [project, setProject] = useState(EMPTY_PROJECT);
@@ -98,6 +107,9 @@ function App() {
   const [selectedPaperIds, setSelectedPaperIds] = useState([]);
   const [selectedPapersOpen, setSelectedPapersOpen] = useState(false);
   const [activeSelectedPaperId, setActiveSelectedPaperId] = useState('');
+  const [gapStatus, setGapStatus] = useState('idle');
+  const [gapResult, setGapResult] = useState(EMPTY_GAP_RESULT);
+  const [selectedGapId, setSelectedGapId] = useState('');
 
   const matrixStats = useMemo(() => {
     const rows = result?.complianceMatrix || [];
@@ -124,6 +136,7 @@ function App() {
       .sort((a, b) => Number(b.relevanceScore || 0) - Number(a.relevanceScore || 0));
   }, [literature.papers, selectedPaperIds]);
   const activeSelectedPaper = selectedPapers.find((paper) => paperStableId(paper) === activeSelectedPaperId) || selectedPapers[0] || null;
+  const activeGap = (gapResult.rankedGaps || []).find((gap) => gap.id === selectedGapId) || null;
 
   useEffect(() => {
     loadSavedMemory({ silent: true });
@@ -172,6 +185,7 @@ function App() {
     result,
     literature,
     selectedPaperIds,
+    gapResult,
     runLog,
     activeTab,
     suggestionIndex,
@@ -219,6 +233,8 @@ function App() {
       });
       setLiterature({ ...EMPTY_LITERATURE, ...literatureData });
       setSelectedPaperIds([]);
+      setGapResult(EMPTY_GAP_RESULT);
+      setSelectedGapId('');
       setRunLog((current) => [
         ...current,
         logEntry('Explore', `Retrieved ${literatureData.papers?.length || 0} deduplicated papers from ${literatureData.queries?.length || 0} query rewrites.`)
@@ -373,6 +389,9 @@ function App() {
     setActiveStage(0);
     setLiterature(EMPTY_LITERATURE);
     setSelectedPaperIds([]);
+    setGapStatus('idle');
+    setGapResult(EMPTY_GAP_RESULT);
+    setSelectedGapId('');
   }
 
   function togglePaperSelection(paper) {
@@ -381,6 +400,8 @@ function App() {
     setSelectedPaperIds((current) => {
       const exists = current.includes(paperKey);
       const next = exists ? current.filter((id) => id !== paperKey) : [...current, paperKey];
+      setGapResult(EMPTY_GAP_RESULT);
+      setSelectedGapId('');
 
       setRunLog((log) => [
         ...log,
@@ -394,6 +415,8 @@ function App() {
   function selectAllPapers() {
     const allIds = (literature.papers || []).map((paper) => paperStableId(paper));
     setSelectedPaperIds(allIds);
+    setGapResult(EMPTY_GAP_RESULT);
+    setSelectedGapId('');
     if (allIds.length) {
       setActiveSelectedPaperId(allIds[0]);
     }
@@ -402,7 +425,40 @@ function App() {
 
   function deselectAllPapers() {
     setSelectedPaperIds([]);
+    setGapResult(EMPTY_GAP_RESULT);
+    setSelectedGapId('');
     setRunLog((current) => [...current, logEntry('Explore', 'Cleared all selected papers.')]);
+  }
+
+  async function detectResearchGaps() {
+    const topPapers = [...(literature.papers || [])]
+      .sort((a, b) => Number(b.relevanceScore || 0) - Number(a.relevanceScore || 0))
+      .slice(0, 24);
+
+    if (topPapers.length < 8) {
+      setError('Retrieve a larger literature set first. At least 8 top papers are needed for gap detection.');
+      return;
+    }
+
+    setGapStatus('running');
+    setError('');
+
+    try {
+      const data = await postJson('/api/research-gaps', {
+        topic: topicInput || project.title || project.topic,
+        papers: topPapers
+      });
+      setGapResult({ ...EMPTY_GAP_RESULT, ...data });
+      setSelectedGapId(data.rankedGaps?.[0]?.id || '');
+      setRunLog((current) => [
+        ...current,
+        logEntry('Gap', data.runMessage || `Detected ${data.rankedGaps?.length || 0} research gaps.`)
+      ]);
+    } catch (requestError) {
+      setError(readError(requestError));
+    } finally {
+      setGapStatus('idle');
+    }
   }
 
   function openSelectedPapersModal() {
@@ -415,6 +471,26 @@ function App() {
 
   function closeSelectedPapersModal() {
     setSelectedPapersOpen(false);
+  }
+
+  function adoptGap(gap) {
+    if (!gap) return;
+
+    const selectedTitles = selectedPapers.slice(0, 5).map((paper) => paper.title).filter(Boolean);
+
+    setProject((current) => ({
+      ...current,
+      problem: gap.description,
+      method: current.method || `Investigate the gap "${gap.title}" with a targeted methodology, baselines, and ablation checks.`,
+      evaluation:
+        current.evaluation ||
+        `Evaluate novelty and feasibility using reproducible metrics, compare against existing approaches, and validate with selected literature evidence.`,
+      references: [current.references, ...selectedTitles].filter(Boolean).join('\n')
+    }));
+
+    setSelectedGapId(gap.id);
+    setRunLog((current) => [...current, logEntry('Gap', `Adopted gap: ${gap.title}.`)]);
+    setActiveStage(2);
   }
 
   function downloadLatex() {
@@ -460,6 +536,8 @@ function App() {
       result: compactResult(result),
       literature,
       selectedPaperIds,
+      gapResult,
+      selectedGapId,
       runLog,
       activeTab,
       suggestionIndex,
@@ -492,6 +570,8 @@ function App() {
       setResult(snapshot.result || null);
       setLiterature({ ...EMPTY_LITERATURE, ...(snapshot.literature || {}) });
       setSelectedPaperIds(Array.isArray(snapshot.selectedPaperIds) ? snapshot.selectedPaperIds : []);
+      setGapResult({ ...EMPTY_GAP_RESULT, ...(snapshot.gapResult || {}) });
+      setSelectedGapId(snapshot.selectedGapId || '');
       setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
       setActiveTab(snapshot.activeTab || 'pdf');
       setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
@@ -855,6 +935,62 @@ function App() {
                     {status === 'answering' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
                     Let LLM Integrate
                   </button>
+                </section>
+
+                <section className="gap-panel gap-decision-card">
+                  <div className="gap-decision-header">
+                    <h3>Research Gap Detector</h3>
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={detectResearchGaps}
+                      disabled={gapStatus !== 'idle' || literature.papers.length < 8}
+                    >
+                      {gapStatus === 'running' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                      Detect Gaps
+                    </button>
+                  </div>
+                  <p className="gap-hint">Uses top retrieved papers automatically (not manual paper selections).</p>
+                  <p className="gap-hint">Top-paper pool: {Math.min(24, literature.papers.length)} / {literature.papers.length || 0}</p>
+                  {gapResult.rankedGaps?.length ? (
+                    <ol className="gap-list">
+                      {gapResult.rankedGaps.map((gap) => {
+                        const isSelected = activeGap?.id === gap.id;
+
+                        return (
+                          <li key={gap.id} className={isSelected ? 'gap-item gap-item-active' : 'gap-item'}>
+                            <div className="gap-item-topline">
+                              <strong>{gap.title}</strong>
+                              <span className="priority medium">{gap.overallScore}</span>
+                            </div>
+                            <p className="gap-addresses"><strong>{gap.category || 'Gap'}</strong> - {gap.confidenceLabel || 'partially explored'}</p>
+                            <p className="gap-description">{gap.description}</p>
+                            <small className="gap-rationale">{gap.rationale}</small>
+                            <div className="gap-metrics">
+                              <span>Novelty: {gap.novelty}</span>
+                              <span>Feasibility: {gap.feasibility}</span>
+                              <span>Data Availability: {gap.availableData}</span>
+                              <span>Relevance: {gap.relevance}</span>
+                              <span>Proposal Potential: {gap.proposalPotential}</span>
+                            </div>
+                            {gap.researchQuestion ? (
+                              <p className="gap-check gap-question">Research question: {gap.researchQuestion}</p>
+                            ) : null}
+                            <div className="deck-actions">
+                              <button className="secondary" type="button" onClick={() => setSelectedGapId(gap.id)}>
+                                Consider
+                              </button>
+                              <button className="primary" type="button" onClick={() => adoptGap(gap)}>
+                                Use This Gap
+                              </button>
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ol>
+                  ) : (
+                    <p className="gap-hint">No gap run cached yet.</p>
+                  )}
                 </section>
               </section>
             </div>
