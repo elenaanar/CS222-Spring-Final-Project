@@ -826,81 +826,7 @@ function App() {
 
           {activeStage === 0 ? (
             <div className="workspace-grid stage-single">
-              <section className="workspace-panel suggestions-panel">
-                {false && (
-                  <>
-                    <PanelHeader title="LLM Suggested Structure" meta={`${fieldSuggestions.length} fields`} />
-                    {fieldSuggestions.length ? (
-                      <div className="suggestion-deck">
-                        <div className="deck-progress">
-                          <span>{Math.min(suggestionIndex + 1, fieldSuggestions.length)} / {fieldSuggestions.length}</span>
-                          <strong>{acceptedSuggestionCount} accepted</strong>
-                        </div>
-                        {currentSuggestion ? (
-                          <article className="suggestion-card active-card" key={`${currentSuggestion.field}-${currentSuggestion.value}`}>
-                            <div className="card-line">
-                              <h3>{currentSuggestion.label || labelForField(currentSuggestion.field)}</h3>
-                              <span className={`priority ${String(currentSuggestion.confidence || 'medium').toLowerCase()}`}>
-                                {currentSuggestion.confidence || 'Medium'}
-                              </span>
-                            </div>
-                            <p>{currentSuggestion.value}</p>
-                            <small>{currentSuggestion.reason}</small>
-                            <div className="deck-actions">
-                              <button
-                                className={project[currentSuggestion.field] === currentSuggestion.value ? 'secondary accepted' : 'primary'}
-                                type="button"
-                                onClick={() => acceptSuggestion(currentSuggestion)}
-                              >
-                                <CheckCircle2 size={16} aria-hidden="true" />
-                                {project[currentSuggestion.field] === currentSuggestion.value ? 'Accepted' : 'Accept and Next'}
-                              </button>
-                              <button className="secondary" type="button" onClick={skipSuggestion}>
-                                Skip
-                              </button>
-                            </div>
-                          </article>
-                        ) : null}
-                        <div className="deck-nav">
-                          <button
-                            className="secondary"
-                            type="button"
-                            disabled={suggestionIndex === 0}
-                            onClick={() => setSuggestionIndex((current) => Math.max(current - 1, 0))}
-                          >
-                            Previous
-                          </button>
-                          <button
-                            className="secondary"
-                            type="button"
-                            disabled={suggestionIndex >= fieldSuggestions.length - 1}
-                            onClick={() => setSuggestionIndex((current) => Math.min(current + 1, fieldSuggestions.length - 1))}
-                          >
-                            Next
-                          </button>
-                        </div>
-                        <div className="deck-strip" aria-label="Suggestion progress">
-                          {fieldSuggestions.map((suggestion, index) => (
-                            <button
-                              key={`${suggestion.field}-${index}`}
-                              className={[
-                                'deck-dot',
-                                index === suggestionIndex ? 'current' : '',
-                                project[suggestion.field] === suggestion.value ? 'done' : ''
-                              ].join(' ')}
-                              type="button"
-                              aria-label={`Open ${suggestion.label || labelForField(suggestion.field)}`}
-                              onClick={() => setSuggestionIndex(index)}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    ) : (
-                      <EmptyState text="Enter a rough idea, then let the model structure it." compact />
-                    )}
-                  </>
-                )}
-
+              <section className="workspace-panel">
                 <section className="literature-inline">
                   <PanelHeader title="Literature Explorer" meta={`${selectedPaperCount} selected`} />
                   <div className="selected-papers-bar">
@@ -995,7 +921,92 @@ function App() {
           ) : null}
 
           {activeStage === 1 ? (
-            <div className="workspace-grid stage-single">
+            <div className="workspace-grid stage-two">
+              <section className="workspace-panel suggestions-panel">
+                <PanelHeader title="LLM Suggested Structure" meta={`${fieldSuggestions.length} fields`} />
+                {fieldSuggestions.length ? (
+                  <div className="suggestion-deck">
+                    <div className="deck-progress">
+                      <span>{Math.min(suggestionIndex + 1, fieldSuggestions.length)} / {fieldSuggestions.length}</span>
+                      <strong>{acceptedSuggestionCount} accepted</strong>
+                    </div>
+                    {currentSuggestion ? (
+                      <article className="suggestion-card active-card" key={`${currentSuggestion.field}-${currentSuggestion.value}`}>
+                        <div className="card-line">
+                          <h3>{currentSuggestion.label || labelForField(currentSuggestion.field)}</h3>
+                          <span className={`priority ${String(currentSuggestion.confidence || 'medium').toLowerCase()}`}>
+                            {currentSuggestion.confidence || 'Medium'}
+                          </span>
+                        </div>
+                        <p>{currentSuggestion.value}</p>
+                        <small>{currentSuggestion.reason}</small>
+                        <div className="deck-actions">
+                          <button
+                            className={project[currentSuggestion.field] === currentSuggestion.value ? 'secondary accepted' : 'primary'}
+                            type="button"
+                            onClick={() => acceptSuggestion(currentSuggestion)}
+                          >
+                            <CheckCircle2 size={16} aria-hidden="true" />
+                            {project[currentSuggestion.field] === currentSuggestion.value ? 'Accepted' : 'Accept and Next'}
+                          </button>
+                          <button className="secondary" type="button" onClick={skipSuggestion}>
+                            Skip
+                          </button>
+                        </div>
+                      </article>
+                    ) : null}
+                    <div className="deck-nav">
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={suggestionIndex === 0}
+                        onClick={() => setSuggestionIndex((current) => Math.max(current - 1, 0))}
+                      >
+                        Previous
+                      </button>
+                      <button
+                        className="secondary"
+                        type="button"
+                        disabled={suggestionIndex >= fieldSuggestions.length - 1}
+                        onClick={() => setSuggestionIndex((current) => Math.min(current + 1, fieldSuggestions.length - 1))}
+                      >
+                        Next
+                      </button>
+                    </div>
+                    <div className="deck-strip" aria-label="Suggestion progress">
+                      {fieldSuggestions.map((suggestion, index) => (
+                        <button
+                          key={`${suggestion.field}-${index}`}
+                          className={[
+                            'deck-dot',
+                            index === suggestionIndex ? 'current' : '',
+                            project[suggestion.field] === suggestion.value ? 'done' : ''
+                          ].join(' ')}
+                          type="button"
+                          aria-label={`Open ${suggestion.label || labelForField(suggestion.field)}`}
+                          onClick={() => setSuggestionIndex(index)}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState text="Enter a rough idea, then let the model structure it." compact />
+                )}
+
+                <section className="custom-note">
+                  <h3>Additional Input</h3>
+                  <textarea
+                    value={customNote}
+                    onChange={(event) => setCustomNote(event.target.value)}
+                    placeholder={currentQuestion?.question || 'Add a detail the options missed.'}
+                  />
+                  <button className="primary" disabled={!customNote.trim() || status !== 'idle'} onClick={submitCustomNote} type="button">
+                    {status === 'answering' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
+                    Let LLM Integrate
+                  </button>
+                </section>
+              </section>
+
               <section className="workspace-panel decisions-panel">
                 <PanelHeader title="Decision Needed" meta={`${decisions.length} open`} />
                 {decisions.length ? (
@@ -1062,19 +1073,6 @@ function App() {
                 ) : (
                   <EmptyState text="No major decision is open. Review the accepted state or draft the proposal." compact />
                 )}
-
-                <section className="custom-note">
-                  <h3>Extra Note</h3>
-                  <textarea
-                    value={customNote}
-                    onChange={(event) => setCustomNote(event.target.value)}
-                    placeholder={currentQuestion?.question || 'Add a detail the options missed.'}
-                  />
-                  <button className="primary" disabled={!customNote.trim() || status !== 'idle'} onClick={submitCustomNote} type="button">
-                    {status === 'answering' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
-                    Let LLM Integrate
-                  </button>
-                </section>
 
                 <section className="gap-panel gap-decision-card">
                   <div className="gap-decision-header">

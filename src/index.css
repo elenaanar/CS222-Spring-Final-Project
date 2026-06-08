@@ -300,6 +300,10 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.workspace-grid.stage-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
 .workspace-panel {
   min-width: 0;
   display: flex;
