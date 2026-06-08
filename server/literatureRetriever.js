@@ -13,7 +13,7 @@ export async function retrieveLiterature(payload = {}) {
     const maxPerQuery = clampNumber(payload.maxPerQuery, 10, 20, DEFAULT_MAX_PER_QUERY);
     const topPapers = clampNumber(payload.topPapers, 10, 80, DEFAULT_TOP_PAPERS);
 
-    const rewrittenQueries = await rewriteQueries(topic, queryCount);
+    const rewrittenQueries = await rewriteQueries(topic, queryCount, Boolean(payload.enhanceWithAI));
     const queryResults = await Promise.all(
         rewrittenQueries.map((query) => fetchQueryPapers(query, maxPerQuery))
     );
@@ -35,9 +35,9 @@ export async function retrieveLiterature(payload = {}) {
     };
 }
 
-async function rewriteQueries(topic, count) {
-    if (!isApiReady()) {
-        return fallbackQueries(topic, count);
+async function rewriteQueries(topic, count, enhanceWithAI = false) {
+    if (!enhanceWithAI || !isApiReady()) {
+        return deterministicQueries(topic, count);
     }
 
     const prompt = {
@@ -61,9 +61,9 @@ async function rewriteQueries(topic, count) {
         const queries = Array.isArray(result.queries) ? result.queries.map(clean).filter(Boolean) : [];
         const deduped = [...new Set(queries)].slice(0, count);
 
-        return deduped.length ? deduped : fallbackQueries(topic, count);
+        return deduped.length ? deduped : deterministicQueries(topic, count);
     } catch {
-        return fallbackQueries(topic, count);
+        return deterministicQueries(topic, count);
     }
 }
 
@@ -424,14 +424,16 @@ function normalizeTitle(title) {
         .trim();
 }
 
-function fallbackQueries(topic, count) {
+function deterministicQueries(topic, count) {
     const base = clean(topic);
     const candidates = [
+        base,
         `${base} survey`,
-        `${base} benchmark dataset`,
-        `${base} evaluation metrics`,
-        `${base} recent advances`,
-        `${base} limitations and gaps`
+        `${base} review`,
+        `${base} limitations`,
+        `${base} evaluation`,
+        `${base} benchmark`,
+        `${base} recent advances`
     ];
 
     return [...new Set(candidates.map(clean).filter(Boolean))].slice(0, count);

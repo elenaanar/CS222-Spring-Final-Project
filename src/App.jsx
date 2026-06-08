@@ -85,6 +85,12 @@ const EMPTY_GAP_RESULT = {
   runMessage: ''
 };
 
+const EMPTY_REVIEW_CYCLE = {
+  rounds: [],
+  selectedCritiqueIds: [],
+  userInstruction: ''
+};
+
 function App() {
   const [topicInput, setTopicInput] = useState('');
   const [project, setProject] = useState(EMPTY_PROJECT);
@@ -110,6 +116,9 @@ function App() {
   const [gapStatus, setGapStatus] = useState('idle');
   const [gapResult, setGapResult] = useState(EMPTY_GAP_RESULT);
   const [selectedGapId, setSelectedGapId] = useState('');
+  const [reviewStatus, setReviewStatus] = useState('idle');
+  const [reviewCycle, setReviewCycle] = useState(EMPTY_REVIEW_CYCLE);
+  const [enhanceQueriesWithAI, setEnhanceQueriesWithAI] = useState(false);
 
   const matrixStats = useMemo(() => {
     const rows = result?.complianceMatrix || [];
@@ -137,6 +146,8 @@ function App() {
   }, [literature.papers, selectedPaperIds]);
   const activeSelectedPaper = selectedPapers.find((paper) => paperStableId(paper) === activeSelectedPaperId) || selectedPapers[0] || null;
   const activeGap = (gapResult.rankedGaps || []).find((gap) => gap.id === selectedGapId) || null;
+  const latestReviewRound = reviewCycle.rounds[reviewCycle.rounds.length - 1] || null;
+  const selectedCritiques = (latestReviewRound?.critiques || []).filter((critique) => reviewCycle.selectedCritiqueIds.includes(critique.id));
 
   useEffect(() => {
     loadSavedMemory({ silent: true });
@@ -186,6 +197,7 @@ function App() {
     literature,
     selectedPaperIds,
     gapResult,
+    reviewCycle,
     runLog,
     activeTab,
     suggestionIndex,
@@ -229,7 +241,8 @@ function App() {
         topic: nextTopic,
         queryCount: 3,
         maxPerQuery: 12,
-        topPapers: 36
+        topPapers: 36,
+        enhanceWithAI: enhanceQueriesWithAI
       });
       setLiterature({ ...EMPTY_LITERATURE, ...literatureData });
       setSelectedPaperIds([]);
@@ -364,6 +377,8 @@ function App() {
   function clearArtifacts() {
     setResult(null);
     updatePdfUrl('');
+    setReviewCycle(EMPTY_REVIEW_CYCLE);
+    setReviewStatus('idle');
   }
 
   function updatePdfUrl(nextUrl) {
@@ -392,6 +407,8 @@ function App() {
     setGapStatus('idle');
     setGapResult(EMPTY_GAP_RESULT);
     setSelectedGapId('');
+    setReviewStatus('idle');
+    setReviewCycle(EMPTY_REVIEW_CYCLE);
   }
 
   function togglePaperSelection(paper) {
@@ -525,6 +542,107 @@ function App() {
     }
   }
 
+  async function runReviewerCritique() {
+    if (!result?.proposalLatex) {
+      setError('Generate a proposal before running the reviewer critique cycle.');
+      return;
+    }
+
+    setReviewStatus('critiquing');
+    setError('');
+
+    try {
+      const previousCritiques = reviewCycle.rounds.flatMap((round) => round.critiques || []);
+      const data = await postJson('/api/review/critique', {
+        project,
+        proposalLatex: result.proposalLatex,
+        evaluationReport: result.evaluationReport,
+        priorCritiques: previousCritiques
+      });
+
+      const critiques = Array.isArray(data.critiques) ? data.critiques : [];
+      const round = {
+        id: `review-round-${Date.now()}`,
+        mode: data.mode || 'local-fallback',
+        provider: data.provider || 'template',
+        summary: data.reviewSummary || 'Reviewer completed one critique pass.',
+        critiques
+      };
+
+      setReviewCycle((current) => ({
+        ...current,
+        rounds: [...current.rounds, round],
+        selectedCritiqueIds: critiques.map((critique) => critique.id)
+      }));
+      setRunLog((current) => [
+        ...current,
+        logEntry('Review', `Reviewer produced ${critiques.length} critique item(s).`)
+      ]);
+      setActiveTab('evaluation');
+    } catch (requestError) {
+      setError(readError(requestError));
+    } finally {
+      setReviewStatus('idle');
+    }
+  }
+
+  function toggleCritiqueSelection(critiqueId) {
+    setReviewCycle((current) => {
+      const exists = current.selectedCritiqueIds.includes(critiqueId);
+      return {
+        ...current,
+        selectedCritiqueIds: exists
+          ? current.selectedCritiqueIds.filter((id) => id !== critiqueId)
+          : [...current.selectedCritiqueIds, critiqueId]
+      };
+    });
+  }
+
+  async function applyReviewChanges() {
+    if (!selectedCritiques.length && !reviewCycle.userInstruction.trim()) {
+      setError('Select at least one critique or add revision instructions before applying changes.');
+      return;
+    }
+
+    setReviewStatus('revising');
+    setError('');
+
+    try {
+      const revision = await postJson('/api/review/revise', {
+        project,
+        selectedCritiques,
+        userInstruction: reviewCycle.userInstruction
+      });
+      const revisedProject = { ...EMPTY_PROJECT, ...(revision.project || project) };
+
+      setProject(revisedProject);
+      setReviewCycle((current) => ({
+        ...current,
+        userInstruction: ''
+      }));
+
+      const nextResult = await postJson('/api/proposal', {
+        ...revisedProject,
+        topic: revisedProject.topic || revisedProject.title,
+        requirements: DEFAULT_REQUIREMENTS
+      });
+      const nextPdfUrl = await exportPdfUrl(nextResult.proposalLatex, revisedProject.title || 'proposal');
+
+      setResult(nextResult);
+      updatePdfUrl(nextPdfUrl);
+      setRunLog((current) => [
+        ...current,
+        logEntry('Review', revision.runMessage || 'Applied selected critique fixes.'),
+        logEntry('Draft', `Regenerated proposal after review cycle using ${nextResult.mode}.`)
+      ]);
+      setActiveTab('evaluation');
+    } catch (requestError) {
+      setError(readError(requestError));
+    } finally {
+      setReviewStatus('idle');
+    }
+  }
+
   function saveMemory({ silent = false } = {}) {
     const snapshot = {
       savedAt: new Date().toISOString(),
@@ -538,6 +656,7 @@ function App() {
       selectedPaperIds,
       gapResult,
       selectedGapId,
+      reviewCycle,
       runLog,
       activeTab,
       suggestionIndex,
@@ -572,6 +691,7 @@ function App() {
       setSelectedPaperIds(Array.isArray(snapshot.selectedPaperIds) ? snapshot.selectedPaperIds : []);
       setGapResult({ ...EMPTY_GAP_RESULT, ...(snapshot.gapResult || {}) });
       setSelectedGapId(snapshot.selectedGapId || '');
+      setReviewCycle({ ...EMPTY_REVIEW_CYCLE, ...(snapshot.reviewCycle || {}) });
       setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
       setActiveTab(snapshot.activeTab || 'pdf');
       setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
@@ -643,6 +763,22 @@ function App() {
             </div>
           </div>
 
+          <div className="query-options">
+            <label className="query-enhance-toggle">
+              <input
+                type="checkbox"
+                checked={enhanceQueriesWithAI}
+                onChange={(event) => setEnhanceQueriesWithAI(event.target.checked)}
+              />
+              Enhance search queries with AI
+            </label>
+            <span className="query-enhance-hint">
+              {enhanceQueriesWithAI
+                ? 'LLM will generate varied query phrasings — useful for vague or broad topics.'
+                : 'Using preset queries (topic, survey, review, limitations, evaluation).'}
+            </span>
+          </div>
+
           <div className="memory-bar">
             <div>
               <strong>Memory</strong>
@@ -688,88 +824,96 @@ function App() {
           {activeStage === 0 ? (
             <div className="workspace-grid stage-single">
               <section className="workspace-panel suggestions-panel">
-                <PanelHeader title="LLM Suggested Structure" meta={`${fieldSuggestions.length} fields`} />
-                {fieldSuggestions.length ? (
-                  <div className="suggestion-deck">
-                    <div className="deck-progress">
-                      <span>{Math.min(suggestionIndex + 1, fieldSuggestions.length)} / {fieldSuggestions.length}</span>
-                      <strong>{acceptedSuggestionCount} accepted</strong>
-                    </div>
-                    {currentSuggestion ? (
-                      <article className="suggestion-card active-card" key={`${currentSuggestion.field}-${currentSuggestion.value}`}>
-                        <div className="card-line">
-                          <h3>{currentSuggestion.label || labelForField(currentSuggestion.field)}</h3>
-                          <span className={`priority ${String(currentSuggestion.confidence || 'medium').toLowerCase()}`}>
-                            {currentSuggestion.confidence || 'Medium'}
-                          </span>
+                {false && (
+                  <>
+                    <PanelHeader title="LLM Suggested Structure" meta={`${fieldSuggestions.length} fields`} />
+                    {fieldSuggestions.length ? (
+                      <div className="suggestion-deck">
+                        <div className="deck-progress">
+                          <span>{Math.min(suggestionIndex + 1, fieldSuggestions.length)} / {fieldSuggestions.length}</span>
+                          <strong>{acceptedSuggestionCount} accepted</strong>
                         </div>
-                        <p>{currentSuggestion.value}</p>
-                        <small>{currentSuggestion.reason}</small>
-                        <div className="deck-actions">
+                        {currentSuggestion ? (
+                          <article className="suggestion-card active-card" key={`${currentSuggestion.field}-${currentSuggestion.value}`}>
+                            <div className="card-line">
+                              <h3>{currentSuggestion.label || labelForField(currentSuggestion.field)}</h3>
+                              <span className={`priority ${String(currentSuggestion.confidence || 'medium').toLowerCase()}`}>
+                                {currentSuggestion.confidence || 'Medium'}
+                              </span>
+                            </div>
+                            <p>{currentSuggestion.value}</p>
+                            <small>{currentSuggestion.reason}</small>
+                            <div className="deck-actions">
+                              <button
+                                className={project[currentSuggestion.field] === currentSuggestion.value ? 'secondary accepted' : 'primary'}
+                                type="button"
+                                onClick={() => acceptSuggestion(currentSuggestion)}
+                              >
+                                <CheckCircle2 size={16} aria-hidden="true" />
+                                {project[currentSuggestion.field] === currentSuggestion.value ? 'Accepted' : 'Accept and Next'}
+                              </button>
+                              <button className="secondary" type="button" onClick={skipSuggestion}>
+                                Skip
+                              </button>
+                            </div>
+                          </article>
+                        ) : null}
+                        <div className="deck-nav">
                           <button
-                            className={project[currentSuggestion.field] === currentSuggestion.value ? 'secondary accepted' : 'primary'}
+                            className="secondary"
                             type="button"
-                            onClick={() => acceptSuggestion(currentSuggestion)}
+                            disabled={suggestionIndex === 0}
+                            onClick={() => setSuggestionIndex((current) => Math.max(current - 1, 0))}
                           >
-                            <CheckCircle2 size={16} aria-hidden="true" />
-                            {project[currentSuggestion.field] === currentSuggestion.value ? 'Accepted' : 'Accept and Next'}
+                            Previous
                           </button>
-                          <button className="secondary" type="button" onClick={skipSuggestion}>
-                            Skip
+                          <button
+                            className="secondary"
+                            type="button"
+                            disabled={suggestionIndex >= fieldSuggestions.length - 1}
+                            onClick={() => setSuggestionIndex((current) => Math.min(current + 1, fieldSuggestions.length - 1))}
+                          >
+                            Next
                           </button>
                         </div>
-                      </article>
-                    ) : null}
-                    <div className="deck-nav">
-                      <button
-                        className="secondary"
-                        type="button"
-                        disabled={suggestionIndex === 0}
-                        onClick={() => setSuggestionIndex((current) => Math.max(current - 1, 0))}
-                      >
-                        Previous
-                      </button>
-                      <button
-                        className="secondary"
-                        type="button"
-                        disabled={suggestionIndex >= fieldSuggestions.length - 1}
-                        onClick={() => setSuggestionIndex((current) => Math.min(current + 1, fieldSuggestions.length - 1))}
-                      >
-                        Next
-                      </button>
-                    </div>
-                    <div className="deck-strip" aria-label="Suggestion progress">
-                      {fieldSuggestions.map((suggestion, index) => (
-                        <button
-                          key={`${suggestion.field}-${index}`}
-                          className={[
-                            'deck-dot',
-                            index === suggestionIndex ? 'current' : '',
-                            project[suggestion.field] === suggestion.value ? 'done' : ''
-                          ].join(' ')}
-                          type="button"
-                          aria-label={`Open ${suggestion.label || labelForField(suggestion.field)}`}
-                          onClick={() => setSuggestionIndex(index)}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <EmptyState text="Enter a rough idea, then let the model structure it." compact />
+                        <div className="deck-strip" aria-label="Suggestion progress">
+                          {fieldSuggestions.map((suggestion, index) => (
+                            <button
+                              key={`${suggestion.field}-${index}`}
+                              className={[
+                                'deck-dot',
+                                index === suggestionIndex ? 'current' : '',
+                                project[suggestion.field] === suggestion.value ? 'done' : ''
+                              ].join(' ')}
+                              type="button"
+                              aria-label={`Open ${suggestion.label || labelForField(suggestion.field)}`}
+                              onClick={() => setSuggestionIndex(index)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ) : (
+                      <EmptyState text="Enter a rough idea, then let the model structure it." compact />
+                    )}
+                  </>
                 )}
 
                 <section className="literature-inline">
                   <PanelHeader title="Literature Explorer" meta={`${selectedPaperCount} selected`} />
-                  <button
-                    className="selected-papers-bar"
-                    type="button"
-                    onClick={openSelectedPapersModal}
-                    disabled={!selectedPaperCount}
-                  >
-                    <span>Selected Papers Workspace</span>
-                    <strong>{selectedPaperCount}</strong>
-                    <small>{selectedPaperCount ? 'Open overlay reader' : 'Select papers to enable'}</small>
-                  </button>
+                  <div className="selected-papers-bar">
+                    <div className="selected-papers-bar-info">
+                      <span>Selected Papers Workspace</span>
+                      <strong>{selectedPaperCount}</strong>
+                    </div>
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={openSelectedPapersModal}
+                      disabled={!selectedPaperCount}
+                    >
+                      Open Reader
+                    </button>
+                  </div>
                   {literature.papers.length ? (
                     <>
                       <div className="literature-summary literature-inline-card">
@@ -1095,7 +1239,82 @@ function App() {
                   </div>
                 </div>
 
-                {renderArtifact(activeTab, result, pdfUrl)}
+                {activeTab === 'evaluation' ? (
+                  <div className="review-cycle-wrap">
+                    <div className="markdown-output">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{result?.evaluationReport || ''}</ReactMarkdown>
+                    </div>
+
+                    <section className="review-cycle-panel">
+                      <div className="review-cycle-header">
+                        <h3>Reviewer Agent Cycle</h3>
+                        <button
+                          className="secondary"
+                          type="button"
+                          onClick={runReviewerCritique}
+                          disabled={reviewStatus !== 'idle' || !result?.proposalLatex}
+                        >
+                          {reviewStatus === 'critiquing' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                          Run Reviewer Critique
+                        </button>
+                      </div>
+                      <p className="review-cycle-hint">Cycle pattern: critique {'->'} change {'->'} critique {'->'} change. You control which fixes are applied.</p>
+
+                      {latestReviewRound ? (
+                        <>
+                          <p className="review-cycle-summary">{latestReviewRound.summary}</p>
+                          <ol className="review-critique-list">
+                            {(latestReviewRound.critiques || []).map((critique) => {
+                              const isSelected = reviewCycle.selectedCritiqueIds.includes(critique.id);
+
+                              return (
+                                <li key={critique.id} className={isSelected ? 'review-critique-item selected' : 'review-critique-item'}>
+                                  <label className="review-critique-toggle">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={() => toggleCritiqueSelection(critique.id)}
+                                    />
+                                    <span>{critique.question || critique.title}</span>
+                                  </label>
+                                  <div className="review-critique-meta">
+                                    <span className="priority high">Severity {critique.severity}/5</span>
+                                    <span>{critique.targetField}</span>
+                                  </div>
+                                  <p>{critique.analysis}</p>
+                                  <small>Suggested fix: {critique.suggestedFix}</small>
+                                </li>
+                              );
+                            })}
+                          </ol>
+                        </>
+                      ) : (
+                        <p className="review-cycle-hint">Run reviewer critique to generate severity-scored critique cards.</p>
+                      )}
+
+                      <label>
+                        Your revision instruction (optional)
+                        <textarea
+                          value={reviewCycle.userInstruction}
+                          onChange={(event) => setReviewCycle((current) => ({ ...current, userInstruction: event.target.value }))}
+                          placeholder="Example: keep scope narrow to one MIR task and add one deterministic baseline"
+                        />
+                      </label>
+
+                      <button
+                        className="primary"
+                        type="button"
+                        onClick={applyReviewChanges}
+                        disabled={reviewStatus !== 'idle' || (!selectedCritiques.length && !reviewCycle.userInstruction.trim())}
+                      >
+                        {reviewStatus === 'revising' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                        Apply Selected Changes and Regenerate
+                      </button>
+                    </section>
+                  </div>
+                ) : (
+                  renderArtifact(activeTab, result, pdfUrl)
+                )}
               </section>
             </div>
           ) : null}

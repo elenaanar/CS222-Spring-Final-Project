@@ -338,6 +338,39 @@ textarea:focus {
   gap: 10px;
 }
 
+.query-options {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.query-enhance-toggle {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 7px;
+  color: #26363b;
+  font-size: 0.86rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.query-enhance-toggle input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #2f6f62;
+}
+
+.query-enhance-hint {
+  color: #617076;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
 .memory-bar {
   display: flex;
   align-items: center;
@@ -681,43 +714,42 @@ textarea:focus {
 }
 
 .selected-papers-bar {
-  display: grid;
-  grid-template-columns: 1fr auto;
+  display: flex;
   align-items: center;
-  gap: 4px 12px;
+  justify-content: space-between;
+  gap: 12px;
   width: 100%;
-  border: 2px solid #8db7a9;
+  border: 1px solid #cbd7dc;
   border-radius: 10px;
-  padding: 14px 14px;
-  background: linear-gradient(180deg, #f6fcf9 0%, #ecf7f2 100%);
-  text-align: left;
-  box-shadow: 0 2px 0 rgba(47, 111, 98, 0.08);
+  padding: 12px 14px;
+  background: #ffffff;
 }
 
-.selected-papers-bar span {
-  color: #173942;
+.selected-papers-bar-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.selected-papers-bar-info span {
+  color: #26363b;
   font-size: 0.98rem;
   font-weight: 900;
 }
 
-.selected-papers-bar strong {
-  grid-row: 1 / span 2;
+.selected-papers-bar-info strong {
+  border: 1px solid #cbd7dc;
+  border-radius: 999px;
+  padding: 3px 9px;
+  background: #edf0f2;
+  color: #536066;
+  font-size: 0.88rem;
+}
+
+.selected-papers-bar .secondary:not(:disabled):hover {
+  border-color: #8db7a9;
+  background: #eaf4f0;
   color: #28584b;
-  font-size: 1.25rem;
-}
-
-.selected-papers-bar small {
-  color: #4f6a72;
-  font-size: 0.8rem;
-  font-weight: 700;
-}
-
-.selected-papers-bar:disabled {
-  opacity: 0.58;
-  cursor: not-allowed;
-}
-
-.selected-papers-bar:not(:disabled):hover {
   transform: translateY(-1px);
 }
 
@@ -1247,6 +1279,95 @@ pre {
 .markdown-output pre code {
   padding: 0;
   background: transparent;
+}
+
+.review-cycle-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.review-cycle-panel {
+  border: 1px solid #cbd7dc;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.review-cycle-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.review-cycle-header h3 {
+  font-size: 0.98rem;
+  color: #26363b;
+}
+
+.review-cycle-hint,
+.review-cycle-summary {
+  margin: 0;
+  color: #5b686e;
+  line-height: 1.4;
+  font-size: 0.84rem;
+}
+
+.review-critique-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-critique-item {
+  border: 1px solid #d6e0e4;
+  border-radius: 8px;
+  background: #fbfdfd;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.review-critique-item.selected {
+  border-color: #8db7a9;
+  background: #edf8f4;
+}
+
+.review-critique-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.88rem;
+  color: #25353b;
+}
+
+.review-critique-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: #4f5d63;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.review-critique-item p {
+  margin: 0;
+  color: #2f3b40;
+  line-height: 1.45;
+}
+
+.review-critique-item small {
+  color: #5e6c72;
+  line-height: 1.45;
 }
 
 .proposal-output {
