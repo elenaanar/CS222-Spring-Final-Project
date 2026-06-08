@@ -103,31 +103,445 @@ Return strict JSON:
 
 First infer concrete proposal data from the rough idea. Give the user suggested data and selectable options before asking open-ended questions. Ask open-ended questions only for information that cannot be reasonably inferred.`;
 
+const REVIEW_CRITIQUE_PROMPT = `You are a strict Reviewer Agent for a CS research proposal.
+
+Return strict JSON:
+{
+  "reviewSummary": "short paragraph",
+  "critiques": [
+    {
+      "id": "stable short id",
+      "dimension": "novelty | scope | method realism | evaluation | baselines | contribution claims | rubric",
+      "issue": "specific concern",
+      "analysis": "counter-argument with evidence from proposal text",
+      "severity": 1,
+      "targetField": "problem | method | evaluation | timeline | resources | references | title",
+      "suggestedFix": "concrete actionable fix"
+    }
+  ]
+}
+
+Rules:
+- Include these required checks: novelty, scope breadth, method realism, evaluation strength, missing baselines, and overstated contributions.
+- Also include rubric alignment concerns where relevant.
+- Severity is 1-5 where 5 is a glaring issue.
+- Counter-argue weak claims; do not be polite filler.
+- Suggest fixes, but do not force final decisions.
+- Return only JSON.`;
+
+const REVIEW_REVISE_PROMPT = `You are a revision agent that updates proposal project state based on reviewer critiques and user choices.
+
+Return strict JSON:
+{
+  "project": {
+    "title": "",
+    "problem": "",
+    "method": "",
+    "timeline": "",
+    "evaluation": "",
+    "resources": "",
+    "references": ""
+  },
+  "appliedChanges": ["short change note"]
+}
+
+Rules:
+- Apply only selected critiques and user instruction.
+- Keep scope realistic and claims defensible.
+- Preserve existing useful content; edit surgically.
+- Return only JSON.`;
+
 export async function startAgentSession(payload) {
   const project = normalizePayload(payload);
   const checklist = extractChecklist(project.requirements || DEFAULT_REQUIREMENTS);
 
   if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
-    const result = await refineProjectWithApi({
-      task: 'start',
-      project,
-      checklist,
-      activeQuestion: null,
-      answer: ''
-    });
+    try {
+      const result = await refineProjectWithApi({
+        task: 'start',
+        project,
+        checklist,
+        activeQuestion: null,
+        answer: ''
+      });
 
-    return {
-      ...result,
-      project: keepOnlyAcceptedStartFields(project, result.project),
-      checklist,
-      inputSummary: summarizeProjectInput(result.project),
-      runMessage: `Initialized topic and prepared ${result.fieldSuggestions.length} suggested field(s) and ${result.decisions.length} decision card(s).`
-    };
+      return {
+        ...result,
+        project: keepOnlyAcceptedStartFields(project, result.project),
+        checklist,
+        inputSummary: summarizeProjectInput(result.project),
+        runMessage: `Initialized topic and prepared ${result.fieldSuggestions.length} suggested field(s) and ${result.decisions.length} decision card(s).`
+      };
+    } catch (error) {
+      return buildStartFallback(project, checklist, error);
+    }
   }
 
+  return buildStartFallback(project, checklist);
+}
+
+export async function answerAgentQuestion(payload) {
+  const project = normalizePayload(payload.project || payload);
+  const checklist = extractChecklist(project.requirements || payload.requirements || DEFAULT_REQUIREMENTS);
+  const activeQuestion = normalizeQuestion(payload.question);
+  const answer = clean(payload.answer);
+
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
+    try {
+      const result = await refineProjectWithApi({
+        task: 'integrate-answer',
+        project,
+        checklist,
+        activeQuestion,
+        answer
+      });
+
+      return {
+        ...result,
+        checklist,
+        inputSummary: summarizeProjectInput(result.project),
+        runMessage: result.updates.join(' ') || 'Integrated answer with model reasoning.'
+      };
+    } catch (error) {
+      return buildAnswerFallback(project, checklist, activeQuestion, answer, error);
+    }
+  }
+
+  return buildAnswerFallback(project, checklist, activeQuestion, answer);
+}
+
+export async function generateProposal(payload) {
+  const project = normalizePayload(payload);
+  const requirements = project.requirements || DEFAULT_REQUIREMENTS;
+  const checklist = extractChecklist(requirements);
+
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
+    try {
+      return await generateWithApi(project, checklist);
+    } catch {
+      return generateLocally(project, checklist);
+    }
+  }
+
+  return generateLocally(project, checklist);
+}
+
+export async function critiqueProposal(payload) {
+  const project = normalizePayload(payload.project || payload);
+  const checklist = extractChecklist(project.requirements || DEFAULT_REQUIREMENTS);
+  const proposalLatex = clean(payload.proposalLatex);
+  const evaluationReport = clean(payload.evaluationReport);
+  const priorCritiques = Array.isArray(payload.priorCritiques) ? payload.priorCritiques : [];
+
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
+    try {
+      return await critiqueWithApi({ project, checklist, proposalLatex, evaluationReport, priorCritiques });
+    } catch {
+      return critiqueLocally({ project, checklist, proposalLatex, evaluationReport, priorCritiques });
+    }
+  }
+
+  return critiqueLocally({ project, checklist, proposalLatex, evaluationReport, priorCritiques });
+}
+
+export async function reviseProposalFromCritique(payload) {
+  const project = normalizePayload(payload.project || payload);
+  const selectedCritiques = Array.isArray(payload.selectedCritiques) ? payload.selectedCritiques : [];
+  const userInstruction = clean(payload.userInstruction);
+
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
+    try {
+      return await reviseWithApi({ project, selectedCritiques, userInstruction });
+    } catch {
+      return reviseLocally({ project, selectedCritiques, userInstruction });
+    }
+  }
+
+  return reviseLocally({ project, selectedCritiques, userInstruction });
+}
+
+async function critiqueWithApi({ project, checklist, proposalLatex, evaluationReport, priorCritiques }) {
+  const model = clean(process.env.LLM_MODEL);
+  if (!model) {
+    throw new Error('LLM_MODEL is required when LLM_API_KEY and LLM_API_URL are configured.');
+  }
+
+  const payload = {
+    project,
+    checklist,
+    proposalLatex: truncateForModel(proposalLatex, 12000),
+    evaluationReport: truncateForModel(evaluationReport, 6000),
+    priorCritiqueCount: priorCritiques.length,
+    requiredChecks: [
+      'Is the question actually novel?',
+      'Is the scope too broad?',
+      'Is the method realistic?',
+      'Is the evaluation convincing?',
+      'Are there missing baselines?',
+      'Are the expected contributions overstated?'
+    ]
+  };
+
+  const content = await callModel({
+    systemPrompt: REVIEW_CRITIQUE_PROMPT,
+    payload,
+    model,
+    temperature: 0.2
+  });
+
+  const parsed = parseJsonContent(content);
+  const critiques = normalizeReviewCritiques(parsed.critiques);
+
+  return {
+    mode: 'api',
+    provider: process.env.LLM_API_URL,
+    reviewSummary: clean(parsed.reviewSummary) || 'Reviewer identified risks and revision opportunities.',
+    critiques,
+    transcript: {
+      prompt: payload,
+      rawResponse: content
+    }
+  };
+}
+
+function critiqueLocally({ project, checklist, priorCritiques }) {
+  const critiques = buildLocalReviewCritiques(project, checklist, priorCritiques);
+
+  return {
+    mode: 'local-fallback',
+    provider: 'template',
+    reviewSummary: 'Local reviewer found proposal-strengthening opportunities across novelty, scope, method, evaluation, and contribution claims.',
+    critiques,
+    transcript: {
+      prompt: { project, checklist, priorCritiquesCount: priorCritiques.length },
+      rawResponse: 'Generated by local fallback reviewer.'
+    }
+  };
+}
+
+async function reviseWithApi({ project, selectedCritiques, userInstruction }) {
+  const model = clean(process.env.LLM_MODEL);
+  if (!model) {
+    throw new Error('LLM_MODEL is required when LLM_API_KEY and LLM_API_URL are configured.');
+  }
+
+  const payload = {
+    project,
+    selectedCritiques,
+    userInstruction
+  };
+
+  const content = await callModel({
+    systemPrompt: REVIEW_REVISE_PROMPT,
+    payload,
+    model,
+    temperature: 0.2
+  });
+
+  const parsed = parseJsonContent(content);
+  const revisedProject = mergeProject(project, normalizePayload(parsed.project || {}));
+  const appliedChanges = Array.isArray(parsed.appliedChanges) ? parsed.appliedChanges.map(clean).filter(Boolean) : [];
+
+  return {
+    mode: 'api',
+    provider: process.env.LLM_API_URL,
+    project: revisedProject,
+    appliedChanges: appliedChanges.length ? appliedChanges : ['Applied selected reviewer critiques.'],
+    runMessage: 'Applied selected critique fixes to project state.',
+    transcript: {
+      prompt: payload,
+      rawResponse: content
+    }
+  };
+}
+
+function reviseLocally({ project, selectedCritiques, userInstruction }) {
+  const nextProject = { ...project };
+  const appliedChanges = [];
+
+  selectedCritiques.forEach((critique) => {
+    const targetField = normalizeRevisionField(critique.targetField);
+    const suggestion = clean(critique.suggestedFix);
+    if (!targetField || !suggestion) return;
+
+    nextProject[targetField] = mergeField(nextProject[targetField], suggestion);
+    appliedChanges.push(`Updated ${targetField}: ${suggestion}`);
+  });
+
+  if (userInstruction) {
+    nextProject.method = mergeField(nextProject.method, userInstruction);
+    appliedChanges.push('Integrated user revision note into method.');
+  }
+
+  return {
+    mode: 'local-fallback',
+    provider: 'template',
+    project: nextProject,
+    appliedChanges: appliedChanges.length ? appliedChanges : ['No critique selected. Project state unchanged.'],
+    runMessage: 'Applied local revision pass from selected critique items.'
+  };
+}
+
+function normalizeReviewCritiques(critiques) {
+  if (!Array.isArray(critiques)) {
+    return [];
+  }
+
+  return critiques
+    .map((item, index) => ({
+      id: clean(item.id) || `critique-${index + 1}`,
+      question: clean(item.question) || reviewQuestionFromDimension(item.dimension),
+      title: clean(item.issue) || clean(item.title) || 'Reviewer concern',
+      analysis: clean(item.analysis) || 'The reviewer found this part under-justified.',
+      severity: clampNumber(item.severity, 1, 5, 3),
+      targetField: normalizeRevisionField(item.targetField),
+      suggestedFix: clean(item.suggestedFix) || 'Revise this section with a more concrete and testable claim.',
+      dimension: clean(item.dimension) || 'rubric'
+    }))
+    .filter((item) => item.question || item.title)
+    .sort((a, b) => Number(b.severity || 0) - Number(a.severity || 0));
+}
+
+function reviewQuestionFromDimension(value) {
+  const dimension = clean(value).toLowerCase();
+  if (dimension.includes('novel')) return 'Is the question actually novel?';
+  if (dimension.includes('scope')) return 'Is the scope too broad?';
+  if (dimension.includes('method')) return 'Is the method realistic?';
+  if (dimension.includes('evaluation')) return 'Is the evaluation convincing?';
+  if (dimension.includes('baseline')) return 'Are there missing baselines?';
+  if (dimension.includes('contribution')) return 'Are the expected contributions overstated?';
+  return 'What is the strongest remaining weakness in this proposal?';
+}
+
+function normalizeRevisionField(field) {
+  const value = clean(field).toLowerCase();
+  const allowed = new Set(['title', 'problem', 'method', 'timeline', 'evaluation', 'resources', 'references']);
+  return allowed.has(value) ? value : 'method';
+}
+
+function buildLocalReviewCritiques(project, checklist, priorCritiques) {
+  const critiques = [];
+  const seen = new Set((Array.isArray(priorCritiques) ? priorCritiques : []).map((item) => clean(item.id)));
+
+  const noveltyMissing = clean(project.references).length < 60;
+  critiques.push({
+    id: 'novelty-check',
+    question: 'Is the question actually novel?',
+    title: noveltyMissing ? 'Novelty is weakly supported by prior work' : 'Novelty claim needs sharper contrast',
+    analysis: noveltyMissing
+      ? 'The proposal does not clearly establish what prior work exists and where the gap is.'
+      : 'Novelty appears plausible but should be stated against explicit baseline approaches.',
+    severity: noveltyMissing ? 5 : 3,
+    targetField: 'references',
+    suggestedFix: 'Add 2-3 concrete prior-work comparisons and one sentence stating the precise novelty delta.',
+    dimension: 'novelty'
+  });
+
+  const scopeBroad = clean(project.problem).length > 300 || /all|across all|comprehensive|entire/.test(clean(project.problem).toLowerCase());
+  critiques.push({
+    id: 'scope-check',
+    question: 'Is the scope too broad?',
+    title: scopeBroad ? 'Scope is too broad for the timeline' : 'Scope is acceptable but could be tighter',
+    analysis: scopeBroad
+      ? 'Current framing attempts too many subproblems for one proposal cycle.'
+      : 'Scope is mostly reasonable but boundaries and exclusions should be explicit.',
+    severity: scopeBroad ? 4 : 2,
+    targetField: 'problem',
+    suggestedFix: 'Narrow to one main task, one target setting, and one primary success criterion.',
+    dimension: 'scope'
+  });
+
+  const methodWeak = clean(project.method).length < 120;
+  critiques.push({
+    id: 'method-check',
+    question: 'Is the method realistic?',
+    title: methodWeak ? 'Method is underspecified' : 'Method is plausible but operational details are thin',
+    analysis: methodWeak
+      ? 'The method does not define a concrete stage-by-stage execution plan.'
+      : 'Method could better describe constraints, fallback behavior, and stopping criteria.',
+    severity: methodWeak ? 4 : 3,
+    targetField: 'method',
+    suggestedFix: 'Specify critique->change loop steps, artifacts produced per step, and stop conditions for user satisfaction.',
+    dimension: 'method realism'
+  });
+
+  const evalWeak = clean(project.evaluation).length < 130;
+  critiques.push({
+    id: 'evaluation-check',
+    question: 'Is the evaluation convincing?',
+    title: evalWeak ? 'Evaluation lacks measurable acceptance criteria' : 'Evaluation needs stronger evidence thresholds',
+    analysis: evalWeak
+      ? 'Evaluation plan does not state concrete metrics or thresholds.'
+      : 'Evaluation has metrics, but before/after expectations and failure criteria are vague.',
+    severity: evalWeak ? 5 : 3,
+    targetField: 'evaluation',
+    suggestedFix: 'Add rubric-based before/after metrics, baseline comparisons, and explicit pass/fail thresholds.',
+    dimension: 'evaluation'
+  });
+
+  const baselineMissing = !/baseline|comparison|prior/i.test(`${project.evaluation} ${project.references}`);
+  critiques.push({
+    id: 'baseline-check',
+    question: 'Are there missing baselines?',
+    title: baselineMissing ? 'Baseline comparisons are missing' : 'Baselines exist but should be expanded',
+    analysis: baselineMissing
+      ? 'No clear baseline is defined for judging improvement.'
+      : 'Baselines are present but should include a stronger external comparator.',
+    severity: baselineMissing ? 4 : 2,
+    targetField: 'evaluation',
+    suggestedFix: 'Define at least one deterministic baseline and one prior workflow baseline.',
+    dimension: 'baselines'
+  });
+
+  const overstated = /always|guarantee|perfect|state of the art|fully/.test(`${project.problem} ${project.evaluation}`.toLowerCase());
+  critiques.push({
+    id: 'contribution-check',
+    question: 'Are the expected contributions overstated?',
+    title: overstated ? 'Contribution claims are overstated' : 'Contribution claims are mostly plausible',
+    analysis: overstated
+      ? 'Claims exceed what current method and evaluation can support.'
+      : 'Claims are plausible but should explicitly note assumptions and limits.',
+    severity: overstated ? 4 : 2,
+    targetField: 'problem',
+    suggestedFix: 'Rephrase contributions as scoped, testable outcomes and add explicit limitations.',
+    dimension: 'contribution claims'
+  });
+
+  const rubricCoverage = checklist.filter((item) => findRequirementEvidence(item, project)).length;
+  if (rubricCoverage < Math.max(3, checklist.length - 3)) {
+    critiques.push({
+      id: 'rubric-check',
+      question: 'Does the draft fully satisfy rubric expectations?',
+      title: 'Rubric coverage is incomplete',
+      analysis: `Only ${rubricCoverage}/${checklist.length} requirement hints appear covered in the current project state.`,
+      severity: 4,
+      targetField: 'method',
+      suggestedFix: 'Add a rubric checklist subsection in evaluation that verifies each required component before final export.',
+      dimension: 'rubric'
+    });
+  }
+
+  const normalized = normalizeReviewCritiques(critiques).filter((item) => !seen.has(item.id));
+  return normalized.length ? normalized : normalizeReviewCritiques(critiques);
+}
+
+function truncateForModel(value, max) {
+  const text = clean(value);
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 1).trimEnd()}...`;
+}
+
+function clampNumber(value, min, max, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(numeric)));
+}
+
+function buildStartFallback(project, checklist, apiError) {
   const questions = buildQuestionObjects(project);
   const fieldSuggestions = buildFieldSuggestions(project);
   const decisions = buildDecisionCards(project);
+  const failureNote = apiError ? ` API fallback trigger: ${clean(apiError.message || String(apiError))}.` : '';
 
   return {
     mode: 'local-fallback',
@@ -140,39 +554,20 @@ export async function startAgentSession(payload) {
     questions,
     inputSummary: summarizeProjectInput(project),
     updates: [`Initialized topic: ${project.title}.`],
-    runMessage: `Initialized topic and prepared ${fieldSuggestions.length} fallback suggestion(s).`,
+    runMessage: `Initialized topic and prepared ${fieldSuggestions.length} fallback suggestion(s).${failureNote}`,
     transcript: {
       prompt: { task: 'start', project, checklist },
-      rawResponse: 'Generated by local fallback because LLM_API_KEY or LLM_API_URL is not configured.'
+      rawResponse: apiError
+        ? `API call failed and local fallback was used. ${clean(apiError.message || String(apiError))}`
+        : 'Generated by local fallback because LLM_API_KEY or LLM_API_URL is not configured.'
     }
   };
 }
 
-export async function answerAgentQuestion(payload) {
-  const project = normalizePayload(payload.project || payload);
-  const checklist = extractChecklist(project.requirements || payload.requirements || DEFAULT_REQUIREMENTS);
-  const activeQuestion = normalizeQuestion(payload.question);
-  const answer = clean(payload.answer);
-
-  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
-    const result = await refineProjectWithApi({
-      task: 'integrate-answer',
-      project,
-      checklist,
-      activeQuestion,
-      answer
-    });
-
-    return {
-      ...result,
-      checklist,
-      inputSummary: summarizeProjectInput(result.project),
-      runMessage: result.updates.join(' ') || 'Integrated answer with model reasoning.'
-    };
-  }
-
+function buildAnswerFallback(project, checklist, activeQuestion, answer, apiError) {
   const integration = integrateAnswerLocally(project, answer, activeQuestion);
   const questions = buildQuestionObjects(integration.project);
+  const failureNote = apiError ? ` API fallback trigger: ${clean(apiError.message || String(apiError))}.` : '';
 
   return {
     mode: 'local-fallback',
@@ -185,24 +580,14 @@ export async function answerAgentQuestion(payload) {
     questions,
     inputSummary: summarizeProjectInput(integration.project),
     updates: integration.updates,
-    runMessage: `${integration.updates.join(' ')} ${questions.length} follow-up question(s) remain.`.trim(),
+    runMessage: `${integration.updates.join(' ')} ${questions.length} follow-up question(s) remain.${failureNote}`.trim(),
     transcript: {
       prompt: { task: 'integrate-answer', project, activeQuestion, answer, checklist },
-      rawResponse: 'Integrated by local fallback because LLM_API_KEY or LLM_API_URL is not configured.'
+      rawResponse: apiError
+        ? `API call failed and local fallback was used. ${clean(apiError.message || String(apiError))}`
+        : 'Integrated by local fallback because LLM_API_KEY or LLM_API_URL is not configured.'
     }
   };
-}
-
-export async function generateProposal(payload) {
-  const project = normalizePayload(payload);
-  const requirements = project.requirements || DEFAULT_REQUIREMENTS;
-  const checklist = extractChecklist(requirements);
-
-  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
-    return generateWithApi(project, checklist);
-  }
-
-  return generateLocally(project, checklist);
 }
 
 async function refineProjectWithApi(payload) {
@@ -720,14 +1105,14 @@ function buildDecisionCards(project) {
 function normalizeFieldSuggestions(suggestions, project) {
   const parsed = Array.isArray(suggestions)
     ? suggestions
-        .map((item) => ({
-          field: clean(item.field),
-          label: clean(item.label) || labelForField(item.field),
-          value: clean(item.value),
-          confidence: clean(item.confidence) || 'Medium',
-          reason: clean(item.reason) || 'Suggested by the model from the rough idea.'
-        }))
-        .filter((item) => item.field && item.value)
+      .map((item) => ({
+        field: clean(item.field),
+        label: clean(item.label) || labelForField(item.field),
+        value: clean(item.value),
+        confidence: clean(item.confidence) || 'Medium',
+        reason: clean(item.reason) || 'Suggested by the model from the rough idea.'
+      }))
+      .filter((item) => item.field && item.value)
     : [];
 
   const fallback = buildFieldSuggestions(project);
@@ -740,22 +1125,22 @@ function normalizeFieldSuggestions(suggestions, project) {
 function normalizeDecisions(decisions, project) {
   const parsed = Array.isArray(decisions)
     ? decisions
-        .map((decision, index) => ({
-          id: clean(decision.id) || `decision-${index + 1}`,
-          title: clean(decision.title) || 'Decision Needed',
-          field: clean(decision.field) || 'problem',
-          question: clean(decision.question) || 'Which option best fits the project?',
-          options: Array.isArray(decision.options)
-            ? decision.options
-                .map((option) => ({
-                  label: clean(option.label),
-                  value: clean(option.value),
-                  rationale: clean(option.rationale)
-                }))
-                .filter((option) => option.label && option.value)
-            : []
-        }))
-        .filter((decision) => decision.options.length)
+      .map((decision, index) => ({
+        id: clean(decision.id) || `decision-${index + 1}`,
+        title: clean(decision.title) || 'Decision Needed',
+        field: clean(decision.field) || 'problem',
+        question: clean(decision.question) || 'Which option best fits the project?',
+        options: Array.isArray(decision.options)
+          ? decision.options
+            .map((option) => ({
+              label: clean(option.label),
+              value: clean(option.value),
+              rationale: clean(option.rationale)
+            }))
+            .filter((option) => option.label && option.value)
+          : []
+      }))
+      .filter((decision) => decision.options.length)
     : [];
 
   return parsed.length ? parsed : buildDecisionCards(project);
@@ -963,17 +1348,17 @@ function coerceResult(result, project, checklist) {
     proposalLatex: extractProposalLatex(result, project),
     complianceMatrix: Array.isArray(result.complianceMatrix) && result.complianceMatrix.length
       ? result.complianceMatrix.map((row) => ({
-          requirement: clean(row.requirement),
-          status: clean(row.status) || 'Needs work',
-          evidence: clean(row.evidence),
-          fix: clean(row.fix)
-        }))
+        requirement: clean(row.requirement),
+        status: clean(row.status) || 'Needs work',
+        evidence: clean(row.evidence),
+        fix: clean(row.fix)
+      }))
       : checklist.map((requirement) => ({
-          requirement,
-          status: 'Needs work',
-          evidence: 'API did not provide matrix evidence.',
-          fix: 'Regenerate with stricter output instructions.'
-        })),
+        requirement,
+        status: 'Needs work',
+        evidence: 'API did not provide matrix evidence.',
+        fix: 'Regenerate with stricter output instructions.'
+      })),
     evaluationReport: clean(result.evaluationReport) || '# Evaluation Report\n\nNo evaluation report returned.',
     questions: Array.isArray(result.questions) ? result.questions.map(clean).filter(Boolean).slice(0, 5) : []
   };
