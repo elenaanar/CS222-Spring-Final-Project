@@ -3,9 +3,15 @@ const MAX_CORPUS = 48;
 const QUERY_COUNT = 5;
 const PER_QUERY = 12;
 
+function log(tag, msg) {
+    console.log(`[gap-detector:${tag}] ${msg}`);
+}
+
 export async function detectResearchGaps(payload = {}) {
     const topic = clean(payload.topic);
     const seedPapers = normalizePapers(payload.papers || []).slice(0, MAX_SEED_PAPERS);
+
+    log('detectResearchGaps', `topic="${topic}" | seedPapers=${seedPapers.length} | apiReady=${isApiReady()}`);
 
     if (!topic) {
         throw new Error('Topic is required for research gap detection.');
@@ -15,14 +21,29 @@ export async function detectResearchGaps(payload = {}) {
         throw new Error('At least 8 retrieved papers are required for research gap detection.');
     }
 
+    log('detectResearchGaps', 'step 1/4 → buildRetrievalQueries');
     const retrievalQueries = await buildRetrievalQueries(topic, seedPapers, QUERY_COUNT);
+    log('detectResearchGaps', `queries built: [${retrievalQueries.join(' | ')}]`);
+
+    log('detectResearchGaps', `step 2/4 → retrieveTopicCorpus (${QUERY_COUNT} queries × ${PER_QUERY} per query)`);
     const retrieved = await retrieveTopicCorpus(retrievalQueries, PER_QUERY);
     const corpus = mergeAndDedupePapers(seedPapers, retrieved).slice(0, MAX_CORPUS);
+    log('detectResearchGaps', `corpus: ${retrieved.length} raw → ${corpus.length} deduped (capped at ${MAX_CORPUS})`);
 
+    log('detectResearchGaps', `step 3/4 → extractPaperEvidence for ${corpus.length} papers`);
     const paperAnalyses = await extractPaperEvidence(topic, corpus);
+    log('detectResearchGaps', `paper analyses: ${paperAnalyses.length}`);
+
+    log('detectResearchGaps', 'step 4a/4 → generateGapHypotheses');
     const candidateGaps = await generateGapHypotheses(topic, paperAnalyses, seedPapers);
+    log('detectResearchGaps', `candidate gaps: ${candidateGaps.length}`);
+
+    log('detectResearchGaps', 'step 4b/4 → verifyGapHypotheses');
     const explorationChecks = await verifyGapHypotheses(candidateGaps, paperAnalyses);
+
+    log('detectResearchGaps', 'step 4c/4 → rankGapHypotheses');
     const rankedGaps = await rankGapHypotheses(topic, candidateGaps, explorationChecks, seedPapers.length);
+    log('detectResearchGaps', `done | rankedGaps=${rankedGaps.length}`);
 
     return {
         mode: isApiReady() ? 'api' : 'local-fallback',
@@ -47,6 +68,7 @@ async function buildRetrievalQueries(topic, seedPapers, count) {
         .slice(0, 1800);
 
     if (!isApiReady()) {
+        log('buildRetrievalQueries', 'API not ready → using fallback queries');
         return fallbackQueries(topic, count);
     }
 
@@ -64,6 +86,7 @@ async function buildRetrievalQueries(topic, seedPapers, count) {
     };
 
     try {
+        log('buildRetrievalQueries', `calling LLM for ${count} retrieval queries`);
         const result = await callLlmJson(
             'Generate balanced retrieval queries for literature synthesis. Return strict JSON only.',
             prompt
@@ -170,6 +193,7 @@ async function extractPaperEvidence(topic, papers) {
     if (!papers.length) return [];
 
     if (!isApiReady()) {
+        log('extractPaperEvidence', 'API not ready → using fallback evidence');
         return fallbackPaperEvidence(topic, papers);
     }
 
@@ -201,6 +225,7 @@ async function extractPaperEvidence(topic, papers) {
     };
 
     try {
+        log('extractPaperEvidence', `calling LLM to extract evidence from ${papers.length} papers`);
         const result = await callLlmJson(
             'Extract structured evidence from title and abstract only. Do not infer claims not supported by metadata. Return strict JSON.',
             prompt
@@ -231,6 +256,7 @@ async function generateGapHypotheses(topic, paperAnalyses, seedPapers) {
     if (!paperAnalyses.length) return [];
 
     if (!isApiReady()) {
+        log('generateGapHypotheses', 'API not ready → using fallback hypotheses');
         return fallbackGapHypotheses(topic, paperAnalyses, seedPapers);
     }
 
@@ -265,6 +291,7 @@ async function generateGapHypotheses(topic, paperAnalyses, seedPapers) {
     };
 
     try {
+        log('generateGapHypotheses', `calling LLM with ${paperAnalyses.length} paper analyses`);
         const result = await callLlmJson(
             'Generate research gap hypotheses from extracted evidence, grouped by category. Return strict JSON.',
             prompt
@@ -329,6 +356,7 @@ async function rankGapHypotheses(topic, gaps, checks, paperCount) {
     if (!gaps.length) return [];
 
     if (!isApiReady()) {
+        log('rankGapHypotheses', 'API not ready → using fallback ranking');
         return fallbackRank(gaps, checks, paperCount);
     }
 
@@ -362,6 +390,7 @@ async function rankGapHypotheses(topic, gaps, checks, paperCount) {
     };
 
     try {
+        log('rankGapHypotheses', `calling LLM to rank ${gaps.length} gaps`);
         const result = await callLlmJson(
             'Rank gap hypotheses for proposal viability with confidence labels. Return strict JSON.',
             prompt
@@ -897,6 +926,12 @@ async function callLlmJson(systemPrompt, payload) {
         throw new Error('LLM_MODEL is required for research gap detection.');
     }
 
+    const task = payload.topic
+        ? (payload.papers ? 'extract-evidence' : payload.gaps ? 'rank-gaps' : payload.candidateGaps ? 'rank-gaps' : 'build-queries')
+        : 'unknown';
+    log('callLlmJson', `→ LLM request | model=${model} | provider=${provider()} | task=${task}`);
+    const t0 = Date.now();
+
     if (provider() === 'gemini') {
         const baseUrl = clean(process.env.LLM_API_URL) || 'https://generativelanguage.googleapis.com/v1beta';
         const endpoint = `${baseUrl.replace(/\/$/, '')}/models/${encodeURIComponent(model)}:generateContent`;
@@ -934,7 +969,9 @@ async function callLlmJson(systemPrompt, payload) {
             .filter(Boolean)
             .join('\n');
 
-        return parseJsonContent(content);
+        const parsed = parseJsonContent(content);
+        log('callLlmJson', `← LLM response | model=${model} | task=${task} | ${Date.now() - t0}ms | ${content?.length ?? 0} chars`);
+        return parsed;
     }
 
     const response = await fetch(process.env.LLM_API_URL, {
@@ -946,7 +983,7 @@ async function callLlmJson(systemPrompt, payload) {
         body: JSON.stringify({
             model,
             temperature: 0.2,
-            response_format: { type: 'json_object' },
+            max_tokens: 4096,
             messages: [
                 { role: 'system', content: systemPrompt },
                 { role: 'user', content: JSON.stringify(payload, null, 2) }
@@ -963,7 +1000,9 @@ async function callLlmJson(systemPrompt, payload) {
         ? data.choices[0].message.content
         : JSON.stringify(data);
 
-    return parseJsonContent(content);
+    const parsed = parseJsonContent(content);
+    log('callLlmJson', `← LLM response | model=${model} | task=${task} | ${Date.now() - t0}ms | ${content?.length ?? 0} chars`);
+    return parsed;
 }
 
 function parseJsonContent(content) {
