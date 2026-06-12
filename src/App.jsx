@@ -1826,29 +1826,51 @@ function App() {
                     {latestReviewRound ? (
                       <>
                         <p className="review-cycle-summary">{latestReviewRound.summary}</p>
-                        <ol className="review-critique-list">
-                          {(latestReviewRound.critiques || []).map((critique) => {
-                            const isSelected = reviewCycle.selectedCritiqueIds.includes(critique.id);
-                            return (
-                              <li key={critique.id} className={isSelected ? 'review-critique-item selected' : 'review-critique-item'}>
-                                <label className="review-critique-toggle">
-                                  <input
-                                    type="checkbox"
-                                    checked={isSelected}
-                                    onChange={() => toggleCritiqueSelection(critique.id)}
-                                  />
-                                  <span>{critique.question || critique.title}</span>
-                                </label>
-                                <div className="review-critique-meta">
-                                  <span className="priority high">Severity {critique.severity}/5</span>
-                                  <span>{critique.targetField}</span>
-                                </div>
-                                <p>{critique.analysis}</p>
-                                <small>Suggested fix: {critique.suggestedFix}</small>
-                              </li>
-                            );
-                          })}
-                        </ol>
+                        {(() => {
+                          const SECTION_ORDER = ['abstract', 'motivation', 'goal', 'method', 'milestones', 'evaluation', 'risks', 'resources', 'references'];
+                          const SECTION_LABELS = { abstract: 'Abstract', motivation: 'Motivation & Research Gap', goal: 'Project Goal', method: 'Method', milestones: 'Expected Results & Milestones', evaluation: 'Evaluation Plan', risks: 'Risks & Mitigation', resources: 'Resources', references: 'References & Assumptions' };
+                          const sorted = [...(latestReviewRound.critiques || [])].sort((a, b) => {
+                            const ai = SECTION_ORDER.indexOf(a.targetField ?? '');
+                            const bi = SECTION_ORDER.indexOf(b.targetField ?? '');
+                            return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+                          });
+                          let lastSection = null;
+                          return (
+                            <ol className="review-critique-list">
+                              {sorted.map((critique) => {
+                                const isSelected = reviewCycle.selectedCritiqueIds.includes(critique.id);
+                                const sev = Number(critique.severity) || 3;
+                                const sevClass = sev >= 4 ? 'sev-high' : sev >= 2 ? 'sev-mid' : 'sev-low';
+                                const showHeader = critique.targetField !== lastSection;
+                                lastSection = critique.targetField;
+                                return (
+                                  <li key={critique.id}>
+                                    {showHeader && (
+                                      <div className="critique-section-header">
+                                        {SECTION_LABELS[critique.targetField] ?? critique.targetField}
+                                      </div>
+                                    )}
+                                    <div className={isSelected ? 'review-critique-item selected' : 'review-critique-item'}>
+                                      <label className="review-critique-toggle">
+                                        <input
+                                          type="checkbox"
+                                          checked={isSelected}
+                                          onChange={() => toggleCritiqueSelection(critique.id)}
+                                        />
+                                        <span>{critique.question || critique.issue || critique.title}</span>
+                                      </label>
+                                      <div className="review-critique-meta">
+                                        <span className={`severity-pill ${sevClass}`}>Severity {sev}/5</span>
+                                      </div>
+                                      <p>{critique.analysis}</p>
+                                      <small>Suggested fix: {critique.suggestedFix}</small>
+                                    </div>
+                                  </li>
+                                );
+                              })}
+                            </ol>
+                          );
+                        })()}
                       </>
                     ) : (
                       <p className="review-cycle-hint">Run reviewer critique to generate severity-scored critique cards.</p>
@@ -1902,19 +1924,6 @@ function App() {
                         ) : null}
                       </div>
                     ) : null}
-
-                    <div className="full-regen-wrap">
-                      <button
-                        className="secondary"
-                        type="button"
-                        onClick={regenerateFullProposal}
-                        disabled={reviewStatus !== 'idle' || status !== 'idle'}
-                      >
-                        {status === 'drafting' ? <Loader2 className="spin" size={15} aria-hidden="true" /> : null}
-                        Full Regeneration
-                      </button>
-                      <span className="full-regen-warning">Rewrites the entire proposal from project state — may change unrelated sections.</span>
-                    </div>
                   </section>
                 ) : activeTab === 'citations' ? (
                   <div className="citation-panel">

@@ -1934,6 +1934,41 @@ pre {
   font-weight: 700;
 }
 
+.critique-section-header {
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #2f6f62;
+  padding: 10px 0 4px;
+  border-bottom: 1px solid #d4e4e0;
+  margin-bottom: 4px;
+}
+
+.severity-pill {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.severity-pill.sev-high {
+  background: #fde8e8;
+  color: #9b1c1c;
+}
+
+.severity-pill.sev-mid {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.severity-pill.sev-low {
+  background: #d1fae5;
+  color: #065f46;
+}
+
 .review-critique-item p {
   margin: 0;
   color: #2f3b40;
@@ -1968,7 +2003,7 @@ pre {
   color: #1a2e38;
   resize: vertical;
   overflow: auto;
-  white-space: pre;
+  white-space: pre-wrap;
   tab-size: 2;
   box-sizing: border-box;
 }

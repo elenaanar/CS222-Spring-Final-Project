@@ -118,25 +118,48 @@ First infer concrete proposal data from the rough idea. Give the user suggested 
 
 const REVIEW_CRITIQUE_PROMPT = `You are a strict Reviewer Agent for a CS research proposal.
 
+The proposal has exactly these nine sections. Generate at least one critique per section:
+0. Abstract                         → targetField: "abstract"
+1. Motivation and Research Gap       → targetField: "motivation"
+2. Project Goal                      → targetField: "goal"
+3. Method                            → targetField: "method"
+4. Expected Results and Milestones   → targetField: "milestones"
+5. Evaluation Plan                   → targetField: "evaluation"
+6. Risks and Mitigation              → targetField: "risks"
+7. Resources                         → targetField: "resources"
+8. References and Assumptions        → targetField: "references"
+
+For each section use the corresponding targetField value exactly as shown above.
+
+Required checks to distribute across sections:
+- abstract:    Does the abstract accurately summarise the gap, approach, and contribution in a few sentences? Is it self-contained enough for a reviewer to assess scope without reading further?
+- motivation:  Is the gap clearly distinguished from prior work? Is the motivation grounded in a concrete real-world problem or mainly theoretical?
+- goal:        Is the goal specific and falsifiable (can you clearly say "achieved" or "not achieved")? Is there one coherent contribution or several loosely bundled goals?
+- method:      Is the method realistic given the timeline? Are there missing baselines? Is the strongest remaining weakness addressed?
+- milestones:  Are milestones concrete and time-bound? Are expected results calibrated to what the method can actually deliver?
+- evaluation:  Is the evaluation convincing? Are metrics well-defined and measurable? Are contributions overstated relative to what the evaluation can show?
+- risks:       Are the identified risks the most significant ones, or are obvious failure modes missing? Does each risk have a concrete mitigation, or are they just acknowledged? Are there any catastrophic risks that would invalidate the whole approach?
+- resources:   Are compute/data requirements specified and accessible? Are there external dependencies (datasets, APIs, hardware) that could block progress?
+- references:  Are core assumptions explicitly stated? Are any assumptions so strong that if wrong the whole approach fails? Are prior-work claims backed by references?
+
 Return strict JSON:
 {
   "reviewSummary": "short paragraph",
   "critiques": [
     {
       "id": "stable short id",
-      "dimension": "novelty | scope | method realism | evaluation | baselines | contribution claims | rubric",
+      "dimension": "novelty | scope | method realism | evaluation | baselines | contribution claims | milestones | resources | assumptions | goal clarity | abstract clarity | risk coverage",
       "issue": "specific concern",
       "analysis": "counter-argument with evidence from proposal text",
       "severity": 1,
-      "targetField": "problem | method | evaluation | timeline | resources | references | title",
+      "targetField": "abstract | motivation | goal | method | milestones | evaluation | risks | resources | references",
       "suggestedFix": "concrete actionable fix"
     }
   ]
 }
 
 Rules:
-- Include these required checks: novelty, scope breadth, method realism, evaluation strength, missing baselines, and overstated contributions.
-- Also include rubric alignment concerns where relevant.
+- Return at least one critique per targetField (all 9 sections must be covered).
 - Severity is 1-5 where 5 is a glaring issue.
 - Counter-argue weak claims; do not be polite filler.
 - Suggest fixes, but do not force final decisions.
@@ -165,16 +188,20 @@ Rules:
 - Return only JSON.`;
 
 const FIELD_TO_SECTION_HINTS = {
-  abstract: ['abstract'],
-  problem:  ['Motivation', 'Gap', 'Problem', 'Introduction'],
-  topic:    ['Motivation', 'Gap', 'Project Goal', 'Introduction'],
-  method:   ['Method', 'Methodology', 'Approach', 'Proposed'],
+  abstract:   ['abstract'],
+  problem:    ['Motivation', 'Gap', 'Problem', 'Introduction'],
+  motivation: ['Motivation', 'Gap', 'Problem', 'Introduction'],
+  topic:      ['Motivation', 'Gap', 'Project Goal', 'Introduction'],
+  goal:       ['Project Goal', 'Goal', 'Objective', 'Introduction'],
+  method:     ['Method', 'Methodology', 'Approach', 'Proposed'],
   evaluation: ['Evaluation', 'Expected Results', 'Baselines', 'Milestones'],
-  timeline: ['Timeline', 'Milestones', 'Expected Results', 'Schedule'],
-  resources: ['Resources', 'Feasibility', 'Budget'],
-  references: ['References', 'Related Work', 'Background'],
-  risks:    ['Risks', 'Limitations', 'Assumptions', 'Mitigation'],
-  title:    ['Motivation', 'Project Goal']
+  milestones: ['Expected Results', 'Milestones', 'Timeline', 'Schedule'],
+  timeline:   ['Timeline', 'Milestones', 'Expected Results', 'Schedule'],
+  resources:  ['Resources', 'Feasibility', 'Budget'],
+  references: ['References', 'Related Work', 'Background', 'Assumptions'],
+  assumptions:['References', 'Assumptions', 'Limitations'],
+  risks:      ['Risks and Mitigation', 'Risks', 'Limitations', 'Mitigation'],
+  title:      ['Motivation', 'Project Goal']
 };
 
 const BANNED_REVIEW_LANGUAGE = [
@@ -811,8 +838,12 @@ function reviewQuestionFromDimension(value) {
 
 function normalizeRevisionField(field) {
   const value = clean(field).toLowerCase();
-  const allowed = new Set(['title', 'problem', 'method', 'timeline', 'evaluation', 'resources', 'references']);
-  return allowed.has(value) ? value : 'method';
+  const allowed = new Set(['abstract', 'title', 'problem', 'motivation', 'goal', 'method', 'milestones', 'timeline', 'evaluation', 'risks', 'resources', 'references', 'assumptions']);
+  if (allowed.has(value)) return value;
+  // map legacy / synonym values
+  if (value === 'topic') return 'goal';
+  if (value === 'assumptions') return 'references';
+  return 'method';
 }
 
 function buildLocalReviewCritiques(project, checklist, priorCritiques) {
