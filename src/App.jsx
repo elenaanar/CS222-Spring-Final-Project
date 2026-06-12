@@ -67,12 +67,6 @@ const STAGES = [
   ['5', 'Review', 'Matrix and critique check weak spots']
 ];
 
-const TABS = [
-  ['pdf', FileText, 'PDF'],
-  ['latex', FileText, 'LaTeX'],
-  ['matrix', ClipboardCheck, 'Matrix'],
-  ['evaluation', ListChecks, 'Review']
-];
 
 const MEMORY_KEY = 'proposal-agent-final-project-memory-v1';
 const EMPTY_LITERATURE = {
@@ -113,7 +107,7 @@ function App() {
   const [runLog, setRunLog] = useState([]);
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState('pdf');
+  const [activeTab, setActiveTab] = useState('evaluation');
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [decisionIndex, setDecisionIndex] = useState(0);
   const [memorySavedAt, setMemorySavedAt] = useState('');
@@ -135,6 +129,8 @@ function App() {
   const reviewAbortRef = useRef(null);
   const evalReportAbortRef = useRef(null);
   const [evalReportStatus, setEvalReportStatus] = useState('idle');
+  const [latexEditorValue, setLatexEditorValue] = useState('');
+  const [latexExportStatus, setLatexExportStatus] = useState('idle');
 
   const litCtx = (proj) => proj.literatureContext || EMPTY_LITERATURE_CONTEXT;
 
@@ -198,6 +194,14 @@ function App() {
       setActiveStage(maxUnlockedStage);
     }
   }, [activeStage, maxUnlockedStage]);
+
+  // Sync editor when a new proposal is generated (but not while user is editing)
+  useEffect(() => {
+    if (result?.proposalLatex) {
+      setLatexEditorValue(result.proposalLatex);
+    }
+  }, [result?.proposalLatex]);
+
 
   useEffect(() => {
     if (!memoryReady) return;
@@ -364,13 +368,12 @@ function App() {
 
       setResult(data);
       updatePdfUrl(nextPdfUrl);
-      setActiveTab('pdf');
       setRunLog((current) => [
         ...current,
         logEntry('Draft', `Generated proposal using ${data.mode}.`),
         logEntry('Review', `Coverage ${countCovered(data.complianceMatrix)}/${data.complianceMatrix?.length || 0}.`)
       ]);
-      setActiveStage(4);
+      setActiveStage(3);
     } catch (requestError) {
       if (isAbortError(requestError)) {
         console.log('[LLM] Request cancelled by user: proposal draft generation');
@@ -479,6 +482,24 @@ function App() {
   function cancelGap() { gapAbortRef.current?.abort(); }
   function cancelReview() { reviewAbortRef.current?.abort(); }
   function cancelEvalReport() { evalReportAbortRef.current?.abort(); }
+
+  async function applyLatexEdits() {
+    const latex = latexEditorValue.trim();
+    if (!latex) return;
+    setLatexExportStatus('exporting');
+    setError('');
+    try {
+      const newPdfUrl = await exportPdfUrl(latex, project.title || 'proposal');
+      setResult((current) => ({ ...current, proposalLatex: latex }));
+      updatePdfUrl(newPdfUrl);
+      setActiveTab('pdf');
+      setRunLog((current) => [...current, logEntry('LaTeX Edit', 'PDF updated from manual edits.')]);
+    } catch (err) {
+      setError(readError(err));
+    } finally {
+      setLatexExportStatus('idle');
+    }
+  }
 
   async function retryEvalReport() {
     if (!result?.proposalLatex) return;
@@ -817,7 +838,8 @@ function App() {
       activeTab,
       suggestionIndex,
       decisionIndex,
-      activeStage
+      activeStage,
+      enhanceQueriesWithAI
     };
 
     localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
@@ -849,10 +871,11 @@ function App() {
       setSelectedGapId(snapshot.selectedGapId || '');
       setReviewCycle({ ...EMPTY_REVIEW_CYCLE, ...(snapshot.reviewCycle || {}) });
       setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
-      setActiveTab(snapshot.activeTab || 'pdf');
+      setActiveTab(['evaluation', 'matrix'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
       setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
       setDecisionIndex(Number(snapshot.decisionIndex || 0));
       setActiveStage(Number.isFinite(Number(snapshot.activeStage)) ? Number(snapshot.activeStage) : 0);
+      setEnhanceQueriesWithAI(Boolean(snapshot.enhanceQueriesWithAI));
       setMemorySavedAt(snapshot.savedAt || '');
       setError('');
 
@@ -891,54 +914,25 @@ function App() {
 
       <section className="workspace single-pane">
         <section className="workflow-artifact">
-          <div className="topic-launch">
-            <label htmlFor="project-topic">
-              Rough Idea
-              <input
-                id="project-topic"
-                value={topicInput}
-                onChange={(event) => setTopicInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') startAgent();
-                }}
-                placeholder="Example: Agent for citation-grounded literature review"
-              />
-            </label>
-            <div className="actions framework-actions">
-              <button className="primary" disabled={!topicInput.trim() || status !== 'idle'} onClick={startAgent} type="button">
-                {status === 'starting' ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Play size={18} aria-hidden="true" />}
-                Structure Idea
+          <div className="workflow-grid" aria-label="Workflow stages">
+            {STAGES.slice(0, visibleStageCount).map(([number, title, description], index) => (
+              <button
+                className={[`stage-card`, 'stage-tab', activeStage === index ? 'stage-active' : ''].join(' ')}
+                type="button"
+                key={title}
+                onClick={() => setActiveStage(index)}
+                disabled={index > maxUnlockedStage}
+              >
+                <div className="stage-topline">
+                  <span className="stage-number">{number}</span>
+                  <span className={`stage-status ${stageStatus(index, fieldSuggestions, decisions, project, result)}`}>
+                    {stageLabel(index, fieldSuggestions, decisions, project, result)}
+                  </span>
+                </div>
+                <h3>{title}</h3>
+                <p>{description}</p>
               </button>
-              {status === 'starting' ? (
-                <button className="secondary" type="button" onClick={cancelStatus} aria-label="Cancel">
-                  <X size={18} aria-hidden="true" /> Cancel
-                </button>
-              ) : (
-                <button className="secondary" disabled={status !== 'idle'} onClick={startSampleAgent} type="button">
-                  <Sparkles size={18} aria-hidden="true" />
-                  Sample
-                </button>
-              )}
-              <button className="secondary icon-button" onClick={reset} type="button" aria-label="Reset">
-                <RefreshCw size={18} aria-hidden="true" />
-              </button>
-            </div>
-          </div>
-
-          <div className="query-options">
-            <label className="query-enhance-toggle">
-              <input
-                type="checkbox"
-                checked={enhanceQueriesWithAI}
-                onChange={(event) => setEnhanceQueriesWithAI(event.target.checked)}
-              />
-              Enhance search queries with AI
-            </label>
-            <span className="query-enhance-hint">
-              {enhanceQueriesWithAI
-                ? 'LLM will generate varied query phrasings — useful for vague or broad topics.'
-                : 'Using preset queries (topic, survey, review, limitations, evaluation).'}
-            </span>
+            ))}
           </div>
 
           <div className="memory-bar">
@@ -961,27 +955,58 @@ function App() {
 
           {error ? <p className="error-banner">{error}</p> : null}
 
-
-          <div className="workflow-grid" aria-label="Workflow stages">
-            {STAGES.slice(0, visibleStageCount).map(([number, title, description], index) => (
-              <button
-                className={[`stage-card`, 'stage-tab', activeStage === index ? 'stage-active' : ''].join(' ')}
-                type="button"
-                key={title}
-                onClick={() => setActiveStage(index)}
-                disabled={index > maxUnlockedStage}
-              >
-                <div className="stage-topline">
-                  <span className="stage-number">{number}</span>
-                  <span className={`stage-status ${stageStatus(index, fieldSuggestions, decisions, project, result)}`}>
-                    {stageLabel(index, fieldSuggestions, decisions, project, result)}
-                  </span>
+          {activeStage === 0 ? (
+            <>
+              <div className="topic-launch">
+                <label htmlFor="project-topic">
+                  Rough Idea
+                  <input
+                    id="project-topic"
+                    value={topicInput}
+                    onChange={(event) => setTopicInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') startAgent();
+                    }}
+                    placeholder="Example: Agent for citation-grounded literature review"
+                  />
+                </label>
+                <div className="actions framework-actions">
+                  <button className="primary" disabled={!topicInput.trim() || status !== 'idle'} onClick={startAgent} type="button">
+                    {status === 'starting' ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Play size={18} aria-hidden="true" />}
+                    Structure Idea
+                  </button>
+                  {status === 'starting' ? (
+                    <button className="secondary" type="button" onClick={cancelStatus} aria-label="Cancel">
+                      <X size={18} aria-hidden="true" /> Cancel
+                    </button>
+                  ) : (
+                    <button className="secondary" disabled={status !== 'idle'} onClick={startSampleAgent} type="button">
+                      <Sparkles size={18} aria-hidden="true" />
+                      Sample
+                    </button>
+                  )}
+                  <button className="secondary icon-button" onClick={reset} type="button" aria-label="Reset">
+                    <RefreshCw size={18} aria-hidden="true" />
+                  </button>
                 </div>
-                <h3>{title}</h3>
-                <p>{description}</p>
-              </button>
-            ))}
-          </div>
+              </div>
+              <div className="query-options">
+                <label className="query-enhance-toggle">
+                  <input
+                    type="checkbox"
+                    checked={enhanceQueriesWithAI}
+                    onChange={(event) => setEnhanceQueriesWithAI(event.target.checked)}
+                  />
+                  Enhance search queries with AI
+                </label>
+                <span className="query-enhance-hint">
+                  {enhanceQueriesWithAI
+                    ? 'LLM will generate varied query phrasings — useful for vague or broad topics.'
+                    : 'Using preset queries (topic, survey, review, limitations, evaluation).'}
+                </span>
+              </div>
+            </>
+          ) : null}
 
           {activeStage === 0 ? (
             <div className="workspace-grid stage-single">
@@ -1335,22 +1360,55 @@ function App() {
           ) : null}
 
           {activeStage === 3 ? (
-            <div className="workspace-grid stage-single">
-              <section className="workspace-panel state-panel">
-                <PanelHeader title="Draft Proposal" meta={project.title ? 'Ready to generate' : 'Needs title'} />
-                <p className="stage-copy">Generate proposal artifacts from the assembled project state.</p>
-                <div className="deck-actions">
-                  <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
-                    {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
-                    Generate Proposal
-                  </button>
-                  {status === 'drafting' ? (
-                    <button className="secondary" type="button" onClick={cancelStatus}>
-                      <X size={16} aria-hidden="true" /> Cancel
+            <div className="draft-split">
+              <section className="draft-editor-panel">
+                <div className="draft-editor-toolbar">
+                  <div className="deck-actions">
+                    <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
+                      {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
+                      {result ? 'Regenerate' : 'Generate Proposal'}
                     </button>
-                  ) : null}
+                    {status === 'drafting' ? (
+                      <button className="secondary" type="button" onClick={cancelStatus}>
+                        <X size={16} aria-hidden="true" /> Cancel
+                      </button>
+                    ) : null}
+                    {latexEditorValue ? (
+                      <button className="primary" type="button" onClick={applyLatexEdits} disabled={latexExportStatus !== 'idle'}>
+                        {latexExportStatus === 'exporting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                        {latexExportStatus === 'exporting' ? 'Compiling…' : 'Update PDF'}
+                      </button>
+                    ) : null}
+                    {latexEditorValue && latexEditorValue !== (result?.proposalLatex || '') ? (
+                      <button className="secondary" type="button" onClick={() => setLatexEditorValue(result?.proposalLatex || '')} disabled={latexExportStatus !== 'idle'}>
+                        Reset
+                      </button>
+                    ) : null}
+                  </div>
+                  <div className="deck-actions">
+                    <button className="secondary" type="button" disabled={!result?.proposalLatex} onClick={downloadLatex}>
+                      <Download size={15} aria-hidden="true" /> LaTeX
+                    </button>
+                    <button className="secondary" type="button" disabled={!result?.proposalLatex || status !== 'idle'} onClick={downloadPdf}>
+                      {status === 'exporting' ? <Loader2 className="spin" size={15} aria-hidden="true" /> : <Download size={15} aria-hidden="true" />}
+                      PDF
+                    </button>
+                  </div>
                 </div>
-                {result ? <p className="stage-copy">A draft already exists. Open Review for matrix and critique outputs.</p> : null}
+                <textarea
+                  className="latex-editor"
+                  value={latexEditorValue}
+                  onChange={(e) => setLatexEditorValue(e.target.value)}
+                  spellCheck={false}
+                  placeholder="LaTeX source appears here after generating a proposal. Edit freely — click Update PDF to recompile."
+                />
+              </section>
+              <section className="draft-preview-panel">
+                {pdfUrl ? (
+                  <iframe className="pdf-preview" src={pdfUrl} title="Compiled proposal PDF" />
+                ) : (
+                  <EmptyState text={status === 'drafting' ? 'Generating proposal…' : 'Generate a proposal to see the PDF preview.'} />
+                )}
               </section>
             </div>
           ) : null}
@@ -1373,10 +1431,10 @@ function App() {
                 )}
               </section>
 
-              <section className="workflow-panel artifacts-panel">
+              <section className="workflow-panel review-panel">
                 <div className="artifact-toolbar">
-                  <nav className="tabs" aria-label="Generated artifacts">
-                    {TABS.map(([id, Icon, label]) => (
+                  <nav className="tabs" aria-label="Review artifacts">
+                    {[['evaluation', ListChecks, 'Evaluation'], ['matrix', ClipboardCheck, 'Matrix']].map(([id, Icon, label]) => (
                       <button
                         key={id}
                         className={activeTab === id ? 'tab active' : 'tab'}
@@ -1388,142 +1446,115 @@ function App() {
                       </button>
                     ))}
                   </nav>
-                  <button className="secondary" type="button" disabled={!result?.proposalLatex} onClick={downloadLatex}>
-                    <Download size={17} aria-hidden="true" />
-                    LaTeX
-                  </button>
+                  <div className="artifact-summary-inline">
+                    <span>Coverage <strong>{matrixStats.total ? `${matrixStats.covered}/${matrixStats.total}` : '—'}</strong></span>
+                  </div>
+                </div>
+
+                {activeTab === 'matrix' ? (
+                  renderArtifact('matrix', result, pdfUrl)
+                ) : (
+                  <div className="markdown-output">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{result?.evaluationReport || ''}</ReactMarkdown>
+                  </div>
+                )}
+
+                <div className="deck-actions" style={{ margin: '0.75rem 0' }}>
                   <button
-                    className="primary"
+                    className="secondary"
                     type="button"
-                    disabled={!result?.proposalLatex || status !== 'idle'}
-                    onClick={downloadPdf}
+                    onClick={retryEvalReport}
+                    disabled={evalReportStatus !== 'idle' || !result?.proposalLatex}
                   >
-                    {status === 'exporting' ? <Loader2 className="spin" size={17} aria-hidden="true" /> : <Download size={17} aria-hidden="true" />}
-                    PDF
+                    {evalReportStatus === 'loading' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                    {evalReportStatus === 'loading' ? 'Generating…' : 'Retry Evaluation Report'}
                   </button>
+                  {evalReportStatus === 'loading' ? (
+                    <button className="secondary" type="button" onClick={cancelEvalReport}>
+                      <X size={16} aria-hidden="true" /> Cancel
+                    </button>
+                  ) : null}
                 </div>
 
-                <div className="artifact-summary">
-                  <div>
-                    <span>Coverage</span>
-                    <strong>{matrixStats.total ? `${matrixStats.covered}/${matrixStats.total}` : '0/0'}</strong>
-                  </div>
-                  <div>
-                    <span>Accepted</span>
-                    <strong>{acceptedCount}/{PROJECT_FIELDS.length}</strong>
-                  </div>
-                  <div className="provider-metric">
-                    <span>Provider</span>
-                    <strong className="provider-value" title={result?.provider || 'waiting'}>{result?.provider || 'waiting'}</strong>
-                  </div>
-                </div>
-
-                {activeTab === 'evaluation' ? (
-                  <div className="review-cycle-wrap">
-                    <div className="markdown-output">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{result?.evaluationReport || ''}</ReactMarkdown>
-                    </div>
-                    <div className="deck-actions" style={{ marginBottom: '1rem' }}>
+                <section className="review-cycle-panel">
+                  <div className="review-cycle-header">
+                    <h3>Reviewer Agent Cycle</h3>
+                    <div className="deck-actions">
                       <button
                         className="secondary"
                         type="button"
-                        onClick={retryEvalReport}
-                        disabled={evalReportStatus !== 'idle' || !result?.proposalLatex}
+                        onClick={runReviewerCritique}
+                        disabled={reviewStatus !== 'idle' || !result?.proposalLatex}
                       >
-                        {evalReportStatus === 'loading' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                        {evalReportStatus === 'loading' ? 'Generating…' : 'Retry Evaluation Report'}
+                        {reviewStatus === 'critiquing' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                        Run Reviewer Critique
                       </button>
-                      {evalReportStatus === 'loading' ? (
-                        <button className="secondary" type="button" onClick={cancelEvalReport}>
+                      {reviewStatus === 'critiquing' ? (
+                        <button className="secondary" type="button" onClick={cancelReview}>
                           <X size={16} aria-hidden="true" /> Cancel
                         </button>
                       ) : null}
                     </div>
-
-                    <section className="review-cycle-panel">
-                      <div className="review-cycle-header">
-                        <h3>Reviewer Agent Cycle</h3>
-                        <div className="deck-actions">
-                          <button
-                            className="secondary"
-                            type="button"
-                            onClick={runReviewerCritique}
-                            disabled={reviewStatus !== 'idle' || !result?.proposalLatex}
-                          >
-                            {reviewStatus === 'critiquing' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                            Run Reviewer Critique
-                          </button>
-                          {reviewStatus === 'critiquing' ? (
-                            <button className="secondary" type="button" onClick={cancelReview}>
-                              <X size={16} aria-hidden="true" /> Cancel
-                            </button>
-                          ) : null}
-                        </div>
-                      </div>
-                      <p className="review-cycle-hint">Cycle pattern: critique {'->'} change {'->'} critique {'->'} change. You control which fixes are applied.</p>
-
-                      {latestReviewRound ? (
-                        <>
-                          <p className="review-cycle-summary">{latestReviewRound.summary}</p>
-                          <ol className="review-critique-list">
-                            {(latestReviewRound.critiques || []).map((critique) => {
-                              const isSelected = reviewCycle.selectedCritiqueIds.includes(critique.id);
-
-                              return (
-                                <li key={critique.id} className={isSelected ? 'review-critique-item selected' : 'review-critique-item'}>
-                                  <label className="review-critique-toggle">
-                                    <input
-                                      type="checkbox"
-                                      checked={isSelected}
-                                      onChange={() => toggleCritiqueSelection(critique.id)}
-                                    />
-                                    <span>{critique.question || critique.title}</span>
-                                  </label>
-                                  <div className="review-critique-meta">
-                                    <span className="priority high">Severity {critique.severity}/5</span>
-                                    <span>{critique.targetField}</span>
-                                  </div>
-                                  <p>{critique.analysis}</p>
-                                  <small>Suggested fix: {critique.suggestedFix}</small>
-                                </li>
-                              );
-                            })}
-                          </ol>
-                        </>
-                      ) : (
-                        <p className="review-cycle-hint">Run reviewer critique to generate severity-scored critique cards.</p>
-                      )}
-
-                      <label>
-                        Your revision instruction (optional)
-                        <textarea
-                          value={reviewCycle.userInstruction}
-                          onChange={(event) => setReviewCycle((current) => ({ ...current, userInstruction: event.target.value }))}
-                          placeholder="Example: keep scope narrow to one MIR task and add one deterministic baseline"
-                        />
-                      </label>
-
-                      <div className="deck-actions">
-                        <button
-                          className="primary"
-                          type="button"
-                          onClick={applyReviewChanges}
-                          disabled={reviewStatus !== 'idle' || (!selectedCritiques.length && !reviewCycle.userInstruction.trim())}
-                        >
-                          {reviewStatus === 'revising' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                          Apply Selected Changes and Regenerate
-                        </button>
-                        {reviewStatus === 'revising' ? (
-                          <button className="secondary" type="button" onClick={cancelReview}>
-                            <X size={16} aria-hidden="true" /> Cancel
-                          </button>
-                        ) : null}
-                      </div>
-                    </section>
                   </div>
-                ) : (
-                  renderArtifact(activeTab, result, pdfUrl)
-                )}
+                  <p className="review-cycle-hint">Cycle pattern: critique {'→'} change {'→'} critique {'→'} change. You control which fixes are applied.</p>
+
+                  {latestReviewRound ? (
+                    <>
+                      <p className="review-cycle-summary">{latestReviewRound.summary}</p>
+                      <ol className="review-critique-list">
+                        {(latestReviewRound.critiques || []).map((critique) => {
+                          const isSelected = reviewCycle.selectedCritiqueIds.includes(critique.id);
+                          return (
+                            <li key={critique.id} className={isSelected ? 'review-critique-item selected' : 'review-critique-item'}>
+                              <label className="review-critique-toggle">
+                                <input
+                                  type="checkbox"
+                                  checked={isSelected}
+                                  onChange={() => toggleCritiqueSelection(critique.id)}
+                                />
+                                <span>{critique.question || critique.title}</span>
+                              </label>
+                              <div className="review-critique-meta">
+                                <span className="priority high">Severity {critique.severity}/5</span>
+                                <span>{critique.targetField}</span>
+                              </div>
+                              <p>{critique.analysis}</p>
+                              <small>Suggested fix: {critique.suggestedFix}</small>
+                            </li>
+                          );
+                        })}
+                      </ol>
+                    </>
+                  ) : (
+                    <p className="review-cycle-hint">Run reviewer critique to generate severity-scored critique cards.</p>
+                  )}
+
+                  <label>
+                    Your revision instruction (optional)
+                    <textarea
+                      value={reviewCycle.userInstruction}
+                      onChange={(event) => setReviewCycle((current) => ({ ...current, userInstruction: event.target.value }))}
+                      placeholder="Example: keep scope narrow to one MIR task and add one deterministic baseline"
+                    />
+                  </label>
+
+                  <div className="deck-actions">
+                    <button
+                      className="primary"
+                      type="button"
+                      onClick={applyReviewChanges}
+                      disabled={reviewStatus !== 'idle' || (!selectedCritiques.length && !reviewCycle.userInstruction.trim())}
+                    >
+                      {reviewStatus === 'revising' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                      Apply Selected Changes and Regenerate
+                    </button>
+                    {reviewStatus === 'revising' ? (
+                      <button className="secondary" type="button" onClick={cancelReview}>
+                        <X size={16} aria-hidden="true" /> Cancel
+                      </button>
+                    ) : null}
+                  </div>
+                </section>
               </section>
             </div>
           ) : null}

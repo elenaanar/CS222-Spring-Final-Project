@@ -705,6 +705,57 @@ textarea:focus {
   gap: 12px;
 }
 
+.draft-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+  width: 100vw;
+  position: relative;
+  left: 50%;
+  margin-left: -50vw;
+  margin-right: -50vw;
+  padding-left: 16px;
+  padding-right: 16px;
+  box-sizing: border-box;
+}
+
+.draft-editor-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.draft-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.draft-preview-panel {
+  position: sticky;
+  top: 16px;
+}
+
+.draft-preview-panel .pdf-preview {
+  width: 100%;
+  height: 85vh;
+  min-height: 500px;
+}
+
+.artifact-summary-inline {
+  font-size: 0.82rem;
+  color: #4f5c61;
+  white-space: nowrap;
+}
+
+.artifact-summary-inline strong {
+  color: #1a2e38;
+  margin-left: 4px;
+}
+
 .stage-copy {
   margin: 0;
   color: #4f5c61;
@@ -1393,6 +1444,30 @@ pre {
 
 .proposal-output {
   min-height: 480px;
+}
+
+.latex-editor-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.latex-editor {
+  width: 100%;
+  height: 80vh;
+  font-family: 'Fira Mono', 'Cascadia Code', 'Consolas', monospace;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  padding: 1rem;
+  border: 1px solid #cbd7dc;
+  border-radius: 8px;
+  background: #f8fafb;
+  color: #1a2e38;
+  resize: vertical;
+  overflow: auto;
+  white-space: pre;
+  tab-size: 2;
+  box-sizing: border-box;
 }
 
 .pdf-preview {
