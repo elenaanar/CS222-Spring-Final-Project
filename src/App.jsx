@@ -487,7 +487,13 @@ function App() {
       }, controller.signal);
       const nextPdfUrl = await exportPdfUrl(data.proposalLatex, project.title || 'proposal');
 
-      setResult(data);
+      setResult((current) => ({
+        ...data,
+        // Keep the existing LLM-generated eval report if the new proposal fell back to a template
+        evaluationReport: (data.mode === 'local-fallback' && current?.evaluationReport && !current.evaluationReport.includes('local deterministic fallback'))
+          ? current.evaluationReport
+          : data.evaluationReport
+      }));
       updatePdfUrl(nextPdfUrl);
       setRunLog((current) => [
         ...current,
@@ -1090,7 +1096,7 @@ function App() {
       setReviewCycle((current) => ({
         ...current,
         rounds: [...current.rounds, round],
-        selectedCritiqueIds: critiques.map((critique) => critique.id)
+        selectedCritiqueIds: []
       }));
       setRunLog((current) => [
         ...current,
