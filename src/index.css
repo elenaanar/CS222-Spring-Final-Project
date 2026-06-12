@@ -32,6 +32,7 @@ button {
   min-height: 100vh;
 }
 
+
 .auth-init-screen {
   min-height: 100vh;
   display: flex;
@@ -53,6 +54,7 @@ button {
 
 .topbar-left {
   flex: 1;
+  position: relative;
 }
 
 .topbar-center {
@@ -493,103 +495,211 @@ textarea:focus {
   font-weight: 600;
 }
 
-.memory-bar {
+/* Hamburger menu */
+.hamburger-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid #cbd7dc;
+  border-radius: 8px;
+  background: #ffffff;
+  cursor: pointer;
+  color: #3d5a63;
+  transition: background 0.15s;
+}
+
+.hamburger-btn:hover {
+  background: #f0f5f7;
+}
+
+.hamburger-saved-badge {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #1a7a3c;
+  color: #fff;
+  font-size: 0.6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hamburger-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 180px;
+  background: #ffffff;
+  border: 1px solid #cbd7dc;
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 200;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.hamburger-timestamp {
+  padding: 8px 14px 6px;
+  font-size: 0.75rem;
+  color: #8fadb6;
+  border-bottom: 1px solid #e5ebee;
+  display: block;
+}
+
+.hm-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 14px;
+  border: none;
+  background: none;
+  font-size: 0.88rem;
+  color: #26363b;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+
+.hm-item:hover {
+  background: #f4f8fa;
+}
+
+.hm-item.danger {
+  color: #c0392b;
+}
+
+.hm-item.danger:hover {
+  background: #fdf2f2;
+}
+
+/* Saves overlay */
+.saves-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.saves-modal {
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 24px;
+  width: min(480px, 92vw);
+  max-height: 75vh;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.22);
+}
+
+.saves-modal-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  border: 1px solid #cbd7dc;
-  border-radius: 8px;
-  padding: 11px 12px;
-  background: #ffffff;
-  flex-wrap: wrap;
 }
 
-.memory-info {
+.saves-modal-head h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #26363b;
+}
+
+.saves-empty {
+  color: #647177;
+  font-size: 0.88rem;
+  text-align: center;
+  padding: 20px 0;
+}
+
+.saves-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  flex: 1;
-  min-width: 120px;
+  gap: 6px;
 }
 
-.memory-bar strong {
-  color: #26363b;
-  font-size: 0.9rem;
+.saves-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 14px;
+  border: 1px solid #e5ebee;
+  border-radius: 8px;
+  background: #f8fbfc;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
 }
 
-.memory-bar span {
-  color: #647177;
-  font-size: 0.82rem;
+.saves-item:hover {
+  background: #eaf4fb;
+  border-color: #93c5d8;
+}
+
+.saves-number {
+  font-size: 0.8rem;
   font-weight: 700;
-}
-
-.memory-actions {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-/* Auth section */
-.auth-section {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.auth-user {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.user-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
-  object-fit: cover;
+  color: #8fadb6;
+  min-width: 28px;
+  text-align: right;
   flex-shrink: 0;
 }
 
-.user-info {
+.saves-meta {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 2px;
   min-width: 0;
+  flex: 1;
 }
 
-.user-name {
-  font-size: 0.85rem;
+.saves-title {
+  font-size: 0.88rem;
   font-weight: 600;
   color: #26363b;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: 160px;
 }
 
-.user-email {
-  font-size: 0.75rem;
+.saves-date {
+  font-size: 0.76rem;
   color: #647177;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  max-width: 160px;
-  font-weight: 400;
 }
 
-.auth-loading {
+.saves-item-delete {
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.82rem;
-  color: #647177;
+  justify-content: center;
+  padding: 5px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #b0bec5;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  opacity: 0;
 }
 
-.google-sign-in {
-  white-space: nowrap;
+.saves-item:hover .saves-item-delete {
+  opacity: 1;
+}
+
+.saves-item-delete:hover {
+  background: #fde8e8;
+  color: #c0392b;
 }
 
 /* Version history modal */
@@ -712,16 +822,6 @@ button.danger:hover {
   border-color: #e74c3c;
 }
 
-.save-btn {
-  min-width: 52px;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-
-.save-flash {
-  background: #e6f7ed !important;
-  color: #1a7a3c !important;
-  border-color: #7fcfa0 !important;
-}
 
 .deck-progress,
 .deck-actions,

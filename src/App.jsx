@@ -7,16 +7,18 @@ import {
   FileText,
   ListChecks,
   Loader2,
+  Menu,
   Play,
   RefreshCw,
   Send,
   Sparkles,
+  Trash2,
   UserCircle,
   X
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { useAuth } from './context/AuthContext.jsx';
+import { useAuth } from './context/useAuth.js';
 
 const DEFAULT_REQUIREMENTS = `Proposal must include:
 - Project title
@@ -71,6 +73,8 @@ const STAGES = [
 
 
 const MEMORY_KEY = 'proposal-agent-final-project-memory-v1';
+const SAVES_KEY = 'proposal-agent-saves-v1';
+const MAX_SAVES = 50;
 const EMPTY_LITERATURE = {
   topic: '',
   mode: 'idle',
@@ -131,12 +135,17 @@ function App() {
   const gapAbortRef = useRef(null);
   const reviewAbortRef = useRef(null);
   const evalReportAbortRef = useRef(null);
+  const manualSaveRef = useRef(null);
   const [evalReportStatus, setEvalReportStatus] = useState('idle');
   const [latexEditorValue, setLatexEditorValue] = useState('');
   const [latexExportStatus, setLatexExportStatus] = useState('idle');
 
   const { user, loading: authLoading, login, logout, authError } = useAuth();
   const [savedFlash, setSavedFlash] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [savesOpen, setSavesOpen] = useState(false);
+  const [saves, setSaves] = useState([]);
+  const menuRef = useRef(null);
 
   const litCtx = (proj) => proj.literatureContext || EMPTY_LITERATURE_CONTEXT;
 
@@ -201,6 +210,26 @@ function App() {
       setActiveStage(maxUnlockedStage);
     }
   }, [activeStage, maxUnlockedStage]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleOutsideClick(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+    }
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [menuOpen]);
+
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        manualSaveRef.current?.();
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Sync editor when a new proposal is generated (but not while user is editing)
   useEffect(() => {
@@ -924,10 +953,59 @@ function App() {
   }
 
 
-  function clearSavedMemory() {
-    if (!window.confirm('Clear saved workspace?\n\nThis permanently deletes your local save and cannot be undone.')) return;
+  function readSavesFromStorage() {
+    try { return JSON.parse(localStorage.getItem(SAVES_KEY) || '[]'); } catch { return []; }
+  }
+
+  function manualSave() {
+    const snapshot = buildSnapshot();
+    const existing = readSavesFromStorage();
+    const entry = {
+      id: Date.now(),
+      savedAt: snapshot.savedAt,
+      proposalTitle: project.title || '',
+      snapshot
+    };
+    const updated = [entry, ...existing].slice(0, MAX_SAVES);
+    localStorage.setItem(SAVES_KEY, JSON.stringify(updated));
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
+    setMemorySavedAt(snapshot.savedAt);
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 2000);
+    setMenuOpen(false);
+    setRunLog((current) => [...current, logEntry('Save', `Version #${updated.length} saved${entry.proposalTitle ? ` — ${entry.proposalTitle}` : ''}.`)]);
+  }
+  // Keep ref in sync so the keyboard shortcut always calls the latest version
+  manualSaveRef.current = manualSave;
+
+  function openSavesPicker() {
+    setSaves(readSavesFromStorage());
+    setSavesOpen(true);
+    setMenuOpen(false);
+  }
+
+  async function restoreSave(entry) {
+    await applySnapshot(entry.snapshot);
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(entry.snapshot));
+    setMemorySavedAt(entry.savedAt);
+    setSavesOpen(false);
+    setRunLog((current) => [...current, logEntry('Restore', `Restored${entry.proposalTitle ? ` — ${entry.proposalTitle}` : ''}`)]);
+  }
+
+  function deleteSave(id) {
+    if (!window.confirm('Delete this save?\n\nThis cannot be undone.')) return;
+    const updated = saves.filter((s) => s.id !== id);
+    localStorage.setItem(SAVES_KEY, JSON.stringify(updated));
+    setSaves(updated);
+  }
+
+  function clearAllSaves() {
+    if (!window.confirm('Clear all saves?\n\nThis permanently deletes every saved version and cannot be undone.')) return;
+    localStorage.removeItem(SAVES_KEY);
     localStorage.removeItem(MEMORY_KEY);
     setMemorySavedAt('');
+    setMenuOpen(false);
+    setRunLog((current) => [...current, logEntry('Clear', 'All saves cleared.')]);
   }
 
   if (authLoading) {
@@ -942,7 +1020,37 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="topbar-left" />
+        {/* Hamburger — top left */}
+        <div className="topbar-left" ref={menuRef}>
+          <button
+            className="hamburger-btn"
+            type="button"
+            onClick={() => setMenuOpen((o) => !o)}
+            aria-label="Menu"
+          >
+            <Menu size={22} />
+            {savedFlash && <span className="hamburger-saved-badge">✓</span>}
+          </button>
+
+          {menuOpen && (
+            <div className="hamburger-dropdown">
+              <span className="hamburger-timestamp">
+                {memorySavedAt ? `Auto-saved ${formatSavedAt(memorySavedAt)}` : 'Not yet saved'}
+              </span>
+              <button className="hm-item" type="button" onClick={manualSave}>
+                Save
+              </button>
+              <button className="hm-item" type="button" onClick={openSavesPicker}>
+                Load version…
+              </button>
+              <button className="hm-item danger" type="button" onClick={clearAllSaves}>
+                Clear all saves
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Title — center */}
         <div className="topbar-center">
           <h1>Research Proposal Agent</h1>
           <span className="status-pill">
@@ -950,6 +1058,8 @@ function App() {
             {result?.mode || (fieldSuggestions.length ? 'structuring' : 'ready')}
           </span>
         </div>
+
+        {/* Auth — top right */}
         <div className="topbar-right">
           {user ? (
             <div className="nav-auth-user">
@@ -975,6 +1085,43 @@ function App() {
         </div>
       </header>
 
+      {/* Saves picker overlay */}
+      {savesOpen && (
+        <div className="saves-overlay" onClick={() => setSavesOpen(false)}>
+          <div className="saves-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="saves-modal-head">
+              <h3>Load Version</h3>
+              <button className="icon-btn" type="button" onClick={() => setSavesOpen(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            {saves.length === 0 ? (
+              <p className="saves-empty">No saves yet. Use the menu to save a version first.</p>
+            ) : (
+              <ul className="saves-list">
+                {saves.map((entry, i) => (
+                  <li key={entry.id} className="saves-item" onClick={() => restoreSave(entry)}>
+                    <span className="saves-number">#{saves.length - i}</span>
+                    <div className="saves-meta">
+                      <span className="saves-title">{entry.proposalTitle || 'Untitled'}</span>
+                      <span className="saves-date">{formatSavedAt(entry.savedAt)}</span>
+                    </div>
+                    <button
+                      className="saves-item-delete"
+                      type="button"
+                      title="Delete this save"
+                      onClick={(e) => { e.stopPropagation(); deleteSave(entry.id); }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+
       <section className="workspace single-pane">
         <section className="workflow-artifact">
           <div className="workflow-grid" aria-label="Workflow stages">
@@ -998,23 +1145,6 @@ function App() {
             ))}
           </div>
 
-          <div className="memory-bar">
-            <div className="memory-info">
-              <strong>Memory</strong>
-              <span>{memorySavedAt ? `Saved ${formatSavedAt(memorySavedAt)}` : 'No saved workspace yet'}</span>
-            </div>
-            <div className="memory-actions">
-              <button
-                className={`secondary save-btn${savedFlash ? ' save-flash' : ''}`}
-                type="button"
-                onClick={() => saveMemory()}
-              >
-                {savedFlash ? 'Saved!' : 'Save'}
-              </button>
-              <button className="secondary" type="button" onClick={() => loadSavedMemory()}>Reload</button>
-              <button className="secondary danger" type="button" onClick={clearSavedMemory}>Clear</button>
-            </div>
-          </div>
 
           {error ? <p className="error-banner">{error}</p> : null}
 

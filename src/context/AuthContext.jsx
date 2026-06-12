@@ -1,13 +1,13 @@
-import { createContext, useContext, useEffect, useState } from 'react';
+import { createContext, useEffect, useState } from 'react';
 import {
-  getRedirectResult,
   onAuthStateChanged,
-  signInWithRedirect,
+  signInWithPopup,
   signOut
 } from 'firebase/auth';
 import { auth, googleProvider } from '../firebase.js';
 
-const AuthContext = createContext(null);
+console.log('[auth] AuthContext module loaded');
+export const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -15,58 +15,46 @@ export function AuthProvider({ children }) {
   const [authError, setAuthError] = useState(null);
 
   useEffect(() => {
-    // Consume the redirect result when the page loads after a Google sign-in redirect.
-    // Errors here surface as visible messages rather than silent failures.
-    getRedirectResult(auth)
-      .then((result) => {
-        if (result?.user) {
-          console.log(`[auth] Redirect sign-in complete: uid=${result.user.uid} displayName=${result.user.displayName}`);
-        }
-      })
-      .catch((e) => {
-        console.error('[auth] Redirect result error:', e.code, e.message);
-        setAuthError(`Sign-in failed (${e.code}). Check Firebase authorized domains.`);
-      });
-
-    return onAuthStateChanged(auth, (firebaseUser) => {
+    console.log('[auth] AuthProvider mounted');
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        console.log('[auth] signed IN', firebaseUser.email);
+      } else {
+        console.log('[auth] signed OUT / no user');
+      }
       setUser(firebaseUser);
       setLoading(false);
-      if (firebaseUser) {
-        console.log(`[auth] Logged in: uid=${firebaseUser.uid} displayName=${firebaseUser.displayName} email=${firebaseUser.email}`);
-      } else {
-        console.log('[auth] Logged out');
-      }
     });
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   async function login() {
     setAuthError(null);
+    console.log('[auth] login() — opening popup');
     try {
-      // signInWithRedirect navigates the full page to Google — avoids popup/cookie issues in dev.
-      await signInWithRedirect(auth, googleProvider);
+      const result = await signInWithPopup(auth, googleProvider);
+      console.log('[auth] popup sign-in succeeded', result.user.email);
     } catch (e) {
-      console.error('[auth] Login failed:', e.code, e.message);
+      console.error('[auth] popup sign-in failed:', e.code, e.message);
       setAuthError(`Sign-in failed: ${e.message}`);
     }
   }
 
   async function logout() {
+    console.log('[auth] logout()');
     try {
       await signOut(auth);
+      console.log('[auth] signed out');
     } catch (e) {
-      console.error('[auth] Logout failed:', e.message);
+      console.error('[auth] signOut failed:', e.message);
     }
   }
 
-  const uid = user?.uid ?? null;
-
   return (
-    <AuthContext.Provider value={{ user, uid, loading, login, logout, authError }}>
+    <AuthContext.Provider value={{ user, uid: user?.uid ?? null, loading, login, logout, authError }}>
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  return useContext(AuthContext);
 }
