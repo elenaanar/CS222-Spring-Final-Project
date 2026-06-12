@@ -11,10 +11,12 @@ import {
   RefreshCw,
   Send,
   Sparkles,
+  UserCircle,
   X
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useAuth } from './context/AuthContext.jsx';
 
 const DEFAULT_REQUIREMENTS = `Proposal must include:
 - Project title
@@ -133,6 +135,9 @@ function App() {
   const [latexEditorValue, setLatexEditorValue] = useState('');
   const [latexExportStatus, setLatexExportStatus] = useState('idle');
 
+  const { user, loading: authLoading, login, logout } = useAuth();
+  const [savedFlash, setSavedFlash] = useState(false);
+
   const litCtx = (proj) => proj.literatureContext || EMPTY_LITERATURE_CONTEXT;
 
   const matrixStats = useMemo(() => {
@@ -171,6 +176,7 @@ function App() {
     loadSavedMemory({ silent: true });
     setMemoryReady(true);
   }, []);
+
 
   useEffect(() => {
     return () => {
@@ -834,8 +840,8 @@ function App() {
     }
   }
 
-  function saveMemory({ silent = false } = {}) {
-    const snapshot = {
+  function buildSnapshot() {
+    return {
       savedAt: new Date().toISOString(),
       topicInput,
       project,
@@ -855,12 +861,49 @@ function App() {
       activeStage,
       enhanceQueriesWithAI
     };
+  }
 
+  function saveMemory({ silent = false } = {}) {
+    const snapshot = buildSnapshot();
     localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
     setMemorySavedAt(snapshot.savedAt);
 
     if (!silent) {
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 2000);
       setRunLog((current) => [...current, logEntry('Memory', 'Saved workspace memory.')]);
+    }
+  }
+
+  async function applySnapshot(snapshot) {
+    setTopicInput(snapshot.topicInput || '');
+    setProject({ ...EMPTY_PROJECT, ...(snapshot.project || {}) });
+    setFieldSuggestions(Array.isArray(snapshot.fieldSuggestions) ? snapshot.fieldSuggestions : []);
+    setDecisions(Array.isArray(snapshot.decisions) ? snapshot.decisions : []);
+    setQuestions(Array.isArray(snapshot.questions) ? snapshot.questions : []);
+    setResult(snapshot.result || null);
+    setLiterature({ ...EMPTY_LITERATURE, ...(snapshot.literature || {}) });
+    setSelectedPaperIds(Array.isArray(snapshot.selectedPaperIds) ? snapshot.selectedPaperIds : []);
+    setGapResult({ ...EMPTY_GAP_RESULT, ...(snapshot.gapResult || {}) });
+    setSelectedGapId(snapshot.selectedGapId || '');
+    setReviewCycle({ ...EMPTY_REVIEW_CYCLE, ...(snapshot.reviewCycle || {}) });
+    setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
+    setActiveTab(['evaluation', 'matrix'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
+    setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
+    setDecisionIndex(Number(snapshot.decisionIndex || 0));
+    setActiveStage(Number.isFinite(Number(snapshot.activeStage)) ? Number(snapshot.activeStage) : 0);
+    setEnhanceQueriesWithAI(Boolean(snapshot.enhanceQueriesWithAI));
+    setMemorySavedAt(snapshot.savedAt || '');
+    setError('');
+
+    if (snapshot.result?.proposalLatex) {
+      try {
+        updatePdfUrl(await exportPdfUrl(snapshot.result.proposalLatex, snapshot.project?.title || 'proposal'));
+      } catch {
+        updatePdfUrl('');
+      }
+    } else {
+      updatePdfUrl('');
     }
   }
 
@@ -870,39 +913,8 @@ function App() {
       if (!silent) setError('No saved memory found.');
       return;
     }
-
     try {
-      const snapshot = JSON.parse(raw);
-      setTopicInput(snapshot.topicInput || '');
-      setProject({ ...EMPTY_PROJECT, ...(snapshot.project || {}) });
-      setFieldSuggestions(Array.isArray(snapshot.fieldSuggestions) ? snapshot.fieldSuggestions : []);
-      setDecisions(Array.isArray(snapshot.decisions) ? snapshot.decisions : []);
-      setQuestions(Array.isArray(snapshot.questions) ? snapshot.questions : []);
-      setResult(snapshot.result || null);
-      setLiterature({ ...EMPTY_LITERATURE, ...(snapshot.literature || {}) });
-      setSelectedPaperIds(Array.isArray(snapshot.selectedPaperIds) ? snapshot.selectedPaperIds : []);
-      setGapResult({ ...EMPTY_GAP_RESULT, ...(snapshot.gapResult || {}) });
-      setSelectedGapId(snapshot.selectedGapId || '');
-      setReviewCycle({ ...EMPTY_REVIEW_CYCLE, ...(snapshot.reviewCycle || {}) });
-      setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
-      setActiveTab(['evaluation', 'matrix'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
-      setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
-      setDecisionIndex(Number(snapshot.decisionIndex || 0));
-      setActiveStage(Number.isFinite(Number(snapshot.activeStage)) ? Number(snapshot.activeStage) : 0);
-      setEnhanceQueriesWithAI(Boolean(snapshot.enhanceQueriesWithAI));
-      setMemorySavedAt(snapshot.savedAt || '');
-      setError('');
-
-      if (snapshot.result?.proposalLatex) {
-        try {
-          updatePdfUrl(await exportPdfUrl(snapshot.result.proposalLatex, snapshot.project?.title || 'proposal'));
-        } catch {
-          updatePdfUrl('');
-        }
-      } else {
-        updatePdfUrl('');
-      }
-
+      await applySnapshot(JSON.parse(raw));
       if (!silent) {
         setRunLog((current) => [...current, logEntry('Memory', 'Reloaded saved workspace memory.')]);
       }
@@ -911,19 +923,53 @@ function App() {
     }
   }
 
+
   function clearSavedMemory() {
+    if (!window.confirm('Clear saved workspace?\n\nThis permanently deletes your local save and cannot be undone.')) return;
     localStorage.removeItem(MEMORY_KEY);
     setMemorySavedAt('');
+  }
+
+  if (authLoading) {
+    return (
+      <div className="auth-init-screen">
+        <Loader2 size={28} className="spin" />
+        <span>Loading…</span>
+      </div>
+    );
   }
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <h1>Research Proposal Agent</h1>
-        <span className="status-pill">
-          <Sparkles size={16} aria-hidden="true" />
-          {result?.mode || (fieldSuggestions.length ? 'structuring' : 'ready')}
-        </span>
+        <div className="topbar-left" />
+        <div className="topbar-center">
+          <h1>Research Proposal Agent</h1>
+          <span className="status-pill">
+            <Sparkles size={16} aria-hidden="true" />
+            {result?.mode || (fieldSuggestions.length ? 'structuring' : 'ready')}
+          </span>
+        </div>
+        <div className="topbar-right">
+          {user ? (
+            <div className="nav-auth-user">
+              <div className="nav-auth-info">
+                <span className="nav-user-name">{user.displayName}</span>
+                <span className="nav-user-email">{user.email}</span>
+              </div>
+              <button className="nav-avatar-btn" type="button" onClick={logout} title="Sign out">
+                {user.photoURL
+                  ? <img src={user.photoURL} alt={user.displayName} className="nav-avatar" referrerPolicy="no-referrer" />
+                  : <UserCircle size={36} strokeWidth={1.5} />}
+              </button>
+            </div>
+          ) : (
+            <button className="nav-signin-btn" type="button" onClick={login} title="Sign in with Google">
+              <UserCircle size={30} strokeWidth={1.5} />
+              <span>Sign in</span>
+            </button>
+          )}
+        </div>
       </header>
 
       <section className="workspace single-pane">
@@ -950,20 +996,20 @@ function App() {
           </div>
 
           <div className="memory-bar">
-            <div>
+            <div className="memory-info">
               <strong>Memory</strong>
               <span>{memorySavedAt ? `Saved ${formatSavedAt(memorySavedAt)}` : 'No saved workspace yet'}</span>
             </div>
             <div className="memory-actions">
-              <button className="secondary" type="button" onClick={() => saveMemory()}>
-                Save
+              <button
+                className={`secondary save-btn${savedFlash ? ' save-flash' : ''}`}
+                type="button"
+                onClick={() => saveMemory()}
+              >
+                {savedFlash ? 'Saved!' : 'Save'}
               </button>
-              <button className="secondary" type="button" onClick={() => loadSavedMemory()}>
-                Reload
-              </button>
-              <button className="secondary" type="button" onClick={clearSavedMemory}>
-                Clear
-              </button>
+              <button className="secondary" type="button" onClick={() => loadSavedMemory()}>Reload</button>
+              <button className="secondary danger" type="button" onClick={clearSavedMemory}>Clear</button>
             </div>
           </div>
 
