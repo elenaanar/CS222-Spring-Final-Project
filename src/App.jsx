@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookMarked,
   BookOpen,
+  PenLine,
   CheckCircle2,
   ClipboardCheck,
   Download,
@@ -1071,7 +1072,7 @@ function App() {
     setFindingLinks(snapshot.findingLinks || {});
     setAdoptedFindings(snapshot.adoptedFindings || {});
     setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
-    setActiveTab(['evaluation', 'matrix', 'citations'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
+    setActiveTab(['evaluation', 'matrix', 'refine', 'citations'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
     setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
     setDecisionIndex(Number(snapshot.decisionIndex || 0));
     setActiveStage(Number.isFinite(Number(snapshot.activeStage)) ? Number(snapshot.activeStage) : 0);
@@ -1781,7 +1782,7 @@ function App() {
               <section className="workflow-panel review-panel">
                 <div className="artifact-toolbar">
                   <nav className="tabs" aria-label="Review artifacts">
-                    {[['evaluation', ListChecks, 'Evaluation'], ['matrix', ClipboardCheck, 'Matrix'], ['citations', BookMarked, 'Citations']].map(([id, Icon, label]) => (
+                    {[['evaluation', ListChecks, 'Evaluation'], ['matrix', ClipboardCheck, 'Matrix'], ['refine', PenLine, 'Refine'], ['citations', BookMarked, 'Citations']].map(([id, Icon, label]) => (
                       <button
                         key={id}
                         className={activeTab === id ? 'tab active' : 'tab'}
@@ -1800,6 +1801,122 @@ function App() {
 
                 {activeTab === 'matrix' ? (
                   renderArtifact('matrix', result, pdfUrl)
+                ) : activeTab === 'refine' ? (
+                  <section className="review-cycle-panel">
+                    <div className="review-cycle-header">
+                      <h3>Reviewer Agent Cycle</h3>
+                      <div className="deck-actions">
+                        <button
+                          className="secondary"
+                          type="button"
+                          onClick={runReviewerCritique}
+                          disabled={reviewStatus !== 'idle' || !result?.proposalLatex}
+                        >
+                          {reviewStatus === 'critiquing' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                          Run Reviewer Critique
+                        </button>
+                        {reviewStatus === 'critiquing' ? (
+                          <button className="secondary" type="button" onClick={cancelReview}>
+                            <X size={16} aria-hidden="true" /> Cancel
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                    <p className="review-cycle-hint">Cycle pattern: critique {'→'} change {'→'} critique {'→'} change. You control which fixes are applied.</p>
+
+                    {latestReviewRound ? (
+                      <>
+                        <p className="review-cycle-summary">{latestReviewRound.summary}</p>
+                        <ol className="review-critique-list">
+                          {(latestReviewRound.critiques || []).map((critique) => {
+                            const isSelected = reviewCycle.selectedCritiqueIds.includes(critique.id);
+                            return (
+                              <li key={critique.id} className={isSelected ? 'review-critique-item selected' : 'review-critique-item'}>
+                                <label className="review-critique-toggle">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={() => toggleCritiqueSelection(critique.id)}
+                                  />
+                                  <span>{critique.question || critique.title}</span>
+                                </label>
+                                <div className="review-critique-meta">
+                                  <span className="priority high">Severity {critique.severity}/5</span>
+                                  <span>{critique.targetField}</span>
+                                </div>
+                                <p>{critique.analysis}</p>
+                                <small>Suggested fix: {critique.suggestedFix}</small>
+                              </li>
+                            );
+                          })}
+                        </ol>
+                      </>
+                    ) : (
+                      <p className="review-cycle-hint">Run reviewer critique to generate severity-scored critique cards.</p>
+                    )}
+
+                    <label>
+                      Your revision instruction (optional)
+                      <textarea
+                        value={reviewCycle.userInstruction}
+                        onChange={(event) => setReviewCycle((current) => ({ ...current, userInstruction: event.target.value }))}
+                        placeholder="Example: keep scope narrow to one MIR task and add one deterministic baseline"
+                      />
+                    </label>
+
+                    <div className="deck-actions">
+                      <button
+                        className="primary"
+                        type="button"
+                        onClick={applyReviewChanges}
+                        disabled={reviewStatus !== 'idle' || (!selectedCritiques.length && !reviewCycle.userInstruction.trim())}
+                      >
+                        {reviewStatus === 'revising' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                        {reviewStatus === 'revising' ? 'Patching sections…' : 'Apply Targeted Edits'}
+                      </button>
+                      {reviewStatus === 'revising' ? (
+                        <button className="secondary" type="button" onClick={cancelReview}>
+                          <X size={16} aria-hidden="true" /> Cancel
+                        </button>
+                      ) : null}
+                    </div>
+
+                    {patchResult ? (
+                      <div className="patch-summary">
+                        <p className="patch-summary-title">{patchResult.summary}</p>
+                        {patchResult.patchedSections.length > 0 ? (
+                          <ul className="patch-section-list">
+                            {patchResult.patchedSections.map((s) => (
+                              <li key={s.sectionName}>
+                                <strong>{s.sectionName}</strong>
+                                {s.appliedCritiques.length > 0 ? (
+                                  <span> — {s.appliedCritiques.join('; ')}</span>
+                                ) : null}
+                              </li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        {patchResult.warnings.length > 0 ? (
+                          <ul className="patch-warning-list">
+                            {patchResult.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                          </ul>
+                        ) : null}
+                      </div>
+                    ) : null}
+
+                    <div className="full-regen-wrap">
+                      <button
+                        className="secondary"
+                        type="button"
+                        onClick={regenerateFullProposal}
+                        disabled={reviewStatus !== 'idle' || status !== 'idle'}
+                      >
+                        {status === 'drafting' ? <Loader2 className="spin" size={15} aria-hidden="true" /> : null}
+                        Full Regeneration
+                      </button>
+                      <span className="full-regen-warning">Rewrites the entire proposal from project state — may change unrelated sections.</span>
+                    </div>
+                  </section>
                 ) : activeTab === 'citations' ? (
                   <div className="citation-panel">
 
@@ -1998,143 +2115,35 @@ function App() {
                     </section>
                   </div>
                 ) : (
-                  <div className="markdown-output">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{result?.evaluationReport || ''}</ReactMarkdown>
-                  </div>
-                )}
-
-                <div className="deck-actions" style={{ margin: '0.75rem 0' }}>
-                  <button
-                    className="secondary"
-                    type="button"
-                    onClick={retryEvalReport}
-                    disabled={evalReportStatus !== 'idle' || !result?.proposalLatex}
-                  >
-                    {evalReportStatus === 'loading' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                    {evalReportStatus === 'loading' ? 'Generating…' : 'Retry Evaluation Report'}
-                  </button>
-                  {evalReportStatus === 'loading' ? (
-                    <button className="secondary" type="button" onClick={cancelEvalReport}>
-                      <X size={16} aria-hidden="true" /> Cancel
-                    </button>
-                  ) : null}
-                </div>
-
-                <section className="review-cycle-panel">
-                  <div className="review-cycle-header">
-                    <h3>Reviewer Agent Cycle</h3>
-                    <div className="deck-actions">
+                  <>
+                    <div className="markdown-output">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{result?.evaluationReport || ''}</ReactMarkdown>
+                    </div>
+                    <div className="deck-actions" style={{ margin: '0.75rem 0 0' }}>
                       <button
                         className="secondary"
                         type="button"
-                        onClick={runReviewerCritique}
-                        disabled={reviewStatus !== 'idle' || !result?.proposalLatex}
+                        onClick={retryEvalReport}
+                        disabled={evalReportStatus !== 'idle' || !result?.proposalLatex}
                       >
-                        {reviewStatus === 'critiquing' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                        Run Reviewer Critique
+                        {evalReportStatus === 'loading' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                        {evalReportStatus === 'loading' ? 'Generating…' : 'Retry Evaluation Report'}
                       </button>
-                      {reviewStatus === 'critiquing' ? (
-                        <button className="secondary" type="button" onClick={cancelReview}>
+                      {evalReportStatus === 'loading' ? (
+                        <button className="secondary" type="button" onClick={cancelEvalReport}>
                           <X size={16} aria-hidden="true" /> Cancel
                         </button>
                       ) : null}
                     </div>
-                  </div>
-                  <p className="review-cycle-hint">Cycle pattern: critique {'→'} change {'→'} critique {'→'} change. You control which fixes are applied.</p>
-
-                  {latestReviewRound ? (
-                    <>
-                      <p className="review-cycle-summary">{latestReviewRound.summary}</p>
-                      <ol className="review-critique-list">
-                        {(latestReviewRound.critiques || []).map((critique) => {
-                          const isSelected = reviewCycle.selectedCritiqueIds.includes(critique.id);
-                          return (
-                            <li key={critique.id} className={isSelected ? 'review-critique-item selected' : 'review-critique-item'}>
-                              <label className="review-critique-toggle">
-                                <input
-                                  type="checkbox"
-                                  checked={isSelected}
-                                  onChange={() => toggleCritiqueSelection(critique.id)}
-                                />
-                                <span>{critique.question || critique.title}</span>
-                              </label>
-                              <div className="review-critique-meta">
-                                <span className="priority high">Severity {critique.severity}/5</span>
-                                <span>{critique.targetField}</span>
-                              </div>
-                              <p>{critique.analysis}</p>
-                              <small>Suggested fix: {critique.suggestedFix}</small>
-                            </li>
-                          );
-                        })}
-                      </ol>
-                    </>
-                  ) : (
-                    <p className="review-cycle-hint">Run reviewer critique to generate severity-scored critique cards.</p>
-                  )}
-
-                  <label>
-                    Your revision instruction (optional)
-                    <textarea
-                      value={reviewCycle.userInstruction}
-                      onChange={(event) => setReviewCycle((current) => ({ ...current, userInstruction: event.target.value }))}
-                      placeholder="Example: keep scope narrow to one MIR task and add one deterministic baseline"
-                    />
-                  </label>
-
-                  <div className="deck-actions">
-                    <button
-                      className="primary"
-                      type="button"
-                      onClick={applyReviewChanges}
-                      disabled={reviewStatus !== 'idle' || (!selectedCritiques.length && !reviewCycle.userInstruction.trim())}
-                    >
-                      {reviewStatus === 'revising' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                      {reviewStatus === 'revising' ? 'Patching sections…' : 'Apply Targeted Edits'}
-                    </button>
-                    {reviewStatus === 'revising' ? (
-                      <button className="secondary" type="button" onClick={cancelReview}>
-                        <X size={16} aria-hidden="true" /> Cancel
+                    <div className="eval-refine-cta">
+                      <button className="primary" type="button" onClick={() => setActiveTab('refine')} disabled={!result?.proposalLatex}>
+                        <PenLine size={15} aria-hidden="true" />
+                        Refine Proposal
                       </button>
-                    ) : null}
-                  </div>
-
-                  {patchResult ? (
-                    <div className="patch-summary">
-                      <p className="patch-summary-title">{patchResult.summary}</p>
-                      {patchResult.patchedSections.length > 0 ? (
-                        <ul className="patch-section-list">
-                          {patchResult.patchedSections.map((s) => (
-                            <li key={s.sectionName}>
-                              <strong>{s.sectionName}</strong>
-                              {s.appliedCritiques.length > 0 ? (
-                                <span> — {s.appliedCritiques.join('; ')}</span>
-                              ) : null}
-                            </li>
-                          ))}
-                        </ul>
-                      ) : null}
-                      {patchResult.warnings.length > 0 ? (
-                        <ul className="patch-warning-list">
-                          {patchResult.warnings.map((w, i) => <li key={i}>{w}</li>)}
-                        </ul>
-                      ) : null}
+                      <span className="eval-refine-hint">Run the reviewer agent to get targeted critique cards you can apply one by one.</span>
                     </div>
-                  ) : null}
-
-                  <div className="full-regen-wrap">
-                    <button
-                      className="secondary"
-                      type="button"
-                      onClick={regenerateFullProposal}
-                      disabled={reviewStatus !== 'idle' || status !== 'idle'}
-                    >
-                      {status === 'drafting' ? <Loader2 className="spin" size={15} aria-hidden="true" /> : null}
-                      Full Regeneration
-                    </button>
-                    <span className="full-regen-warning">Rewrites the entire proposal from project state — may change unrelated sections.</span>
-                  </div>
-                </section>
+                  </>
+                )}
               </section>
             </div>
           ) : null}
