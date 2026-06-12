@@ -13,6 +13,7 @@ import {
   startAgentSession
 } from './proposalGenerator.js';
 import { detectResearchGaps } from './researchGapDetector.js';
+import { reviewCitations } from './citationReviewer.js';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -214,6 +215,22 @@ app.post('/api/export/pdf', async (request, response) => {
   } catch (error) {
     response.status(500).json({
       error: 'PDF export failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post('/api/citations/review', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    if (!String(payload.proposalLatex || '').trim()) {
+      response.status(400).json({ error: 'proposalLatex is required.' });
+      return;
+    }
+    response.json(await reviewCitations(payload));
+  } catch (error) {
+    response.status(500).json({
+      error: 'Citation review failed.',
       detail: error instanceof Error ? error.message : String(error)
     });
   }

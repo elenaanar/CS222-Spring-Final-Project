@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  BookMarked,
   BookOpen,
   CheckCircle2,
   ClipboardCheck,
@@ -51,8 +52,11 @@ const EMPTY_PROJECT = {
   resources: '',
   references: '',
   requirements: DEFAULT_REQUIREMENTS,
-  literatureContext: EMPTY_LITERATURE_CONTEXT
+  literatureContext: EMPTY_LITERATURE_CONTEXT,
+  citationBank: []
 };
+
+const EMPTY_EVIDENCE_DRAFT = { type: 'claim', text: '', supports: '', key: '' };
 
 const PROJECT_FIELDS = [
   ['problem', 'Problem'],
@@ -131,10 +135,18 @@ function App() {
   const [patchResult, setPatchResult] = useState(null);
   const [enhanceQueriesWithAI, setEnhanceQueriesWithAI] = useState(false);
 
+  const [citationReviewStatus, setCitationReviewStatus] = useState('idle');
+  const [citationReview, setCitationReview] = useState(null);
+  const [findingLinks, setFindingLinks] = useState({});
+  const [adoptedFindings, setAdoptedFindings] = useState({});
+  const [findingErrors, setFindingErrors] = useState({});
+  const [evidenceDraft, setEvidenceDraft] = useState(EMPTY_EVIDENCE_DRAFT);
+
   const abortRef = useRef(null);
   const gapAbortRef = useRef(null);
   const reviewAbortRef = useRef(null);
   const evalReportAbortRef = useRef(null);
+  const citationReviewAbortRef = useRef(null);
   const manualSaveRef = useRef(null);
   const [evalReportStatus, setEvalReportStatus] = useState('idle');
   const [latexEditorValue, setLatexEditorValue] = useState('');
@@ -192,6 +204,10 @@ function App() {
       if (pdfUrl) URL.revokeObjectURL(pdfUrl);
     };
   }, [pdfUrl]);
+
+  useEffect(() => {
+    setEvidenceDraft(EMPTY_EVIDENCE_DRAFT);
+  }, [activeSelectedPaperId]);
 
   useEffect(() => {
     if (!selectedPapers.length) {
@@ -520,6 +536,136 @@ function App() {
   function cancelGap() { gapAbortRef.current?.abort(); }
   function cancelReview() { reviewAbortRef.current?.abort(); }
   function cancelEvalReport() { evalReportAbortRef.current?.abort(); }
+  function cancelCitationReview() { citationReviewAbortRef.current?.abort(); }
+
+  function addToBank() {
+    if (!activeSelectedPaper || !evidenceDraft.text.trim()) return;
+    const lastName = (activeSelectedPaper.authors?.[0] || '').split(' ').pop().toLowerCase() || 'unknown';
+    const autoKey = `${lastName}${activeSelectedPaper.year || ''}`;
+    const entry = {
+      id: `ev-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+      paperId: activeSelectedPaper.paperId || '',
+      citationKey: evidenceDraft.key.trim() || autoKey,
+      title: activeSelectedPaper.title || '',
+      authors: activeSelectedPaper.authors || [],
+      year: activeSelectedPaper.year || null,
+      venue: activeSelectedPaper.venue || '',
+      url: activeSelectedPaper.url || '',
+      evidenceType: evidenceDraft.type,
+      evidenceText: evidenceDraft.text.trim(),
+      supports: evidenceDraft.supports.split(',').map(s => s.trim()).filter(Boolean),
+      userVerified: true
+    };
+    setProject(current => ({
+      ...current,
+      citationBank: [...(current.citationBank || []), entry]
+    }));
+    setEvidenceDraft(EMPTY_EVIDENCE_DRAFT);
+    setRunLog(current => [...current, logEntry('Citations', `Added evidence from: ${activeSelectedPaper.title?.slice(0, 50) || 'paper'}`)]);
+  }
+
+  function linkFinding(index, evidenceId) {
+    setFindingLinks((current) => ({ ...current, [index]: evidenceId }));
+  }
+
+  function unlinkFinding(index) {
+    setFindingLinks((current) => { const next = { ...current }; delete next[index]; return next; });
+  }
+
+  function setFindingError(index, msg) {
+    setFindingErrors((current) => ({ ...current, [index]: msg }));
+    setTimeout(() => setFindingErrors((current) => { const next = { ...current }; delete next[index]; return next; }), 3500);
+  }
+
+  function adoptSuggestion(finding, index) {
+    const claim = finding.claim;
+    const replacement = finding.suggestedRewrite;
+    if (!claim || !replacement || !latexEditorValue) return;
+
+    let updated = latexEditorValue;
+    if (latexEditorValue.includes(claim)) {
+      updated = latexEditorValue.replace(claim, replacement);
+    } else {
+      // Try whitespace-normalised match
+      const escaped = claim.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+      const match = latexEditorValue.match(new RegExp(escaped));
+      if (match) {
+        updated = latexEditorValue.replace(new RegExp(escaped), replacement);
+      } else {
+        setFindingError(index, "Couldn't find exact text — edit manually in the LaTeX editor.");
+        return;
+      }
+    }
+
+    setLatexEditorValue(updated);
+    setResult((current) => ({ ...current, proposalLatex: updated }));
+    setAdoptedFindings((current) => ({ ...current, [index]: 'rewrite' }));
+    setRunLog((current) => [...current, logEntry('Citations', `Rephrased: "${claim.slice(0, 60)}…"`)]);
+  }
+
+  function insertCite(finding, index) {
+    const linkedId = findingLinks[index];
+    const ev = (project.citationBank || []).find((e) => e.id === linkedId);
+    if (!ev?.citationKey || !latexEditorValue) return;
+
+    const citeStr = `~\\cite{${ev.citationKey}}`;
+    const claim = finding.claim;
+    let updated = latexEditorValue;
+
+    if (latexEditorValue.includes(claim)) {
+      const pos = latexEditorValue.indexOf(claim) + claim.length;
+      updated = latexEditorValue.slice(0, pos) + citeStr + latexEditorValue.slice(pos);
+    } else {
+      const escaped = claim.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+      const match = latexEditorValue.match(new RegExp(escaped));
+      if (match) {
+        const pos = latexEditorValue.indexOf(match[0]) + match[0].length;
+        updated = latexEditorValue.slice(0, pos) + citeStr + latexEditorValue.slice(pos);
+      } else {
+        setFindingError(index, `Couldn't find claim — add \\cite{${ev.citationKey}} manually.`);
+        return;
+      }
+    }
+
+    setLatexEditorValue(updated);
+    setResult((current) => ({ ...current, proposalLatex: updated }));
+    setAdoptedFindings((current) => ({ ...current, [index]: 'cite' }));
+    setRunLog((current) => [...current, logEntry('Citations', `Inserted \\cite{${ev.citationKey}}`)]);
+  }
+
+  function removeFromBank(id) {
+    if (!window.confirm('Remove this evidence entry from the citation bank?')) return;
+    setProject(current => ({
+      ...current,
+      citationBank: (current.citationBank || []).filter(e => e.id !== id)
+    }));
+  }
+
+  async function runCitationReview() {
+    if (!result?.proposalLatex) return;
+    citationReviewAbortRef.current?.abort();
+    const controller = new AbortController();
+    citationReviewAbortRef.current = controller;
+    setCitationReviewStatus('running');
+    setError('');
+    try {
+      const data = await postJson('/api/citations/review', {
+        proposalLatex: result.proposalLatex,
+        citationBank: project.citationBank || []
+      }, controller.signal);
+      setCitationReview(data);
+      setFindingLinks({});
+      setAdoptedFindings({});
+      setFindingErrors({});
+      setRunLog(current => [...current, logEntry('Citations', `Coverage score: ${data.coverageScore}% | ${data.findings?.length ?? 0} findings`)]);
+    } catch (requestError) {
+      if (isAbortError(requestError)) return;
+      setError(readError(requestError));
+    } finally {
+      setCitationReviewStatus('idle');
+      citationReviewAbortRef.current = null;
+    }
+  }
 
   function regenerateFullProposal() {
     if (!window.confirm('Regenerate the full proposal from project state?\n\nThis rewrites every section from scratch and may change unrelated content. Use targeted edits for small fixes.')) return;
@@ -883,6 +1029,10 @@ function App() {
       gapResult,
       selectedGapId,
       reviewCycle,
+      patchResult,
+      citationReview,
+      findingLinks,
+      adoptedFindings,
       runLog,
       activeTab,
       suggestionIndex,
@@ -916,8 +1066,12 @@ function App() {
     setGapResult({ ...EMPTY_GAP_RESULT, ...(snapshot.gapResult || {}) });
     setSelectedGapId(snapshot.selectedGapId || '');
     setReviewCycle({ ...EMPTY_REVIEW_CYCLE, ...(snapshot.reviewCycle || {}) });
+    setPatchResult(snapshot.patchResult || null);
+    setCitationReview(snapshot.citationReview || null);
+    setFindingLinks(snapshot.findingLinks || {});
+    setAdoptedFindings(snapshot.adoptedFindings || {});
     setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
-    setActiveTab(['evaluation', 'matrix'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
+    setActiveTab(['evaluation', 'matrix', 'citations'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
     setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
     setDecisionIndex(Number(snapshot.decisionIndex || 0));
     setActiveStage(Number.isFinite(Number(snapshot.activeStage)) ? Number(snapshot.activeStage) : 0);
@@ -1627,7 +1781,7 @@ function App() {
               <section className="workflow-panel review-panel">
                 <div className="artifact-toolbar">
                   <nav className="tabs" aria-label="Review artifacts">
-                    {[['evaluation', ListChecks, 'Evaluation'], ['matrix', ClipboardCheck, 'Matrix']].map(([id, Icon, label]) => (
+                    {[['evaluation', ListChecks, 'Evaluation'], ['matrix', ClipboardCheck, 'Matrix'], ['citations', BookMarked, 'Citations']].map(([id, Icon, label]) => (
                       <button
                         key={id}
                         className={activeTab === id ? 'tab active' : 'tab'}
@@ -1646,6 +1800,203 @@ function App() {
 
                 {activeTab === 'matrix' ? (
                   renderArtifact('matrix', result, pdfUrl)
+                ) : activeTab === 'citations' ? (
+                  <div className="citation-panel">
+
+                    {/* Citation Bank */}
+                    <section className="citation-bank-section">
+                      <div className="citation-bank-header">
+                        <div>
+                          <h3>Citation Bank</h3>
+                          <p className="citation-bank-hint">Add evidence from the Selected Papers reader. Only user-verified entries appear here.</p>
+                        </div>
+                        <span className="citation-bank-count">{(project.citationBank || []).length} entries</span>
+                      </div>
+                      {(project.citationBank || []).length === 0 ? (
+                        <p className="citation-empty">No evidence recorded yet. Open the literature reader, select a paper, and use the Record Evidence form to add entries.</p>
+                      ) : (
+                        <ul className="citation-bank-list">
+                          {(project.citationBank || []).map((entry) => (
+                            <li key={entry.id} className="citation-entry">
+                              <div className="citation-entry-top">
+                                <span className={`citation-type-badge type-${entry.evidenceType}`}>{entry.evidenceType.replace('_', ' ')}</span>
+                                {entry.citationKey && <code className="citation-key">\cite{'{'}{ entry.citationKey}{'}'}</code>}
+                                <span className="citation-entry-source">{entry.title}{entry.year ? ` (${entry.year})` : ''}</span>
+                              </div>
+                              <p className="citation-entry-text">{entry.evidenceText}</p>
+                              {(entry.supports || []).length > 0 && (
+                                <div className="citation-entry-supports">
+                                  {entry.supports.map((s) => <span key={s} className="citation-support-tag">{s}</span>)}
+                                </div>
+                              )}
+                              <button className="citation-entry-delete" type="button" title="Remove entry" onClick={() => removeFromBank(entry.id)}>
+                                <Trash2 size={13} />
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </section>
+
+                    {/* Citation Coverage Review */}
+                    <section className="citation-review-section">
+                      <div className="citation-review-header">
+                        <h3>Citation Coverage Review</h3>
+                        <div className="deck-actions">
+                          <button
+                            className="secondary"
+                            type="button"
+                            disabled={citationReviewStatus !== 'idle' || !result?.proposalLatex}
+                            onClick={runCitationReview}
+                          >
+                            {citationReviewStatus === 'running' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <BookMarked size={16} aria-hidden="true" />}
+                            {citationReviewStatus === 'running' ? 'Reviewing…' : 'Run Citation Review'}
+                          </button>
+                          {citationReviewStatus === 'running' && (
+                            <button className="secondary" type="button" onClick={cancelCitationReview}>
+                              <X size={16} aria-hidden="true" /> Cancel
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="citation-review-hint">Scans your proposal for unsupported prior-work claims. Needs a generated proposal to run.</p>
+
+                      {citationReview ? (
+                        <>
+                          <div className="coverage-score-block">
+                            <div className="coverage-score-main">
+                              <span className="coverage-score-label">Coverage Score</span>
+                              <span className={`coverage-score-value ${citationReview.coverageScore >= 70 ? 'score-good' : citationReview.coverageScore >= 40 ? 'score-mid' : 'score-low'}`}>
+                                {citationReview.coverageScore}%
+                              </span>
+                            </div>
+                            <div className="coverage-stats">
+                              {['supported', 'needs_citation', 'unsupported', 'assumption', 'hypothesis', 'proposed_contribution'].map((cls) => {
+                                const count = (citationReview.findings || []).filter((f) => f.classification === cls).length;
+                                return count > 0 ? (
+                                  <span key={cls} className={`coverage-stat cls-${cls}`}>
+                                    {cls.replace(/_/g, ' ')}: <strong>{count}</strong>
+                                  </span>
+                                ) : null;
+                              })}
+                            </div>
+                          </div>
+
+                          {(citationReview.findings || []).length > 0 ? (
+                            <ol className="finding-list">
+                              {citationReview.findings.map((finding, i) => {
+                                const noAction = ['assumption', 'hypothesis', 'proposed_contribution'].includes(finding.classification);
+                                return (
+                                <li key={i} className={`finding-item finding-${finding.classification}${noAction ? ' finding-passive' : ''}`}>
+                                  <div className="finding-top">
+                                    <span className={`finding-badge cls-${finding.classification}`}>
+                                      {finding.classification.replace(/_/g, ' ')}
+                                    </span>
+                                    {noAction && (
+                                      <span className="finding-no-action">
+                                        <CheckCircle2 size={12} aria-hidden="true" />
+                                        no action needed
+                                      </span>
+                                    )}
+                                  </div>
+                                  <blockquote className="finding-claim">"{finding.claim}"</blockquote>
+                                  <p className="finding-explanation">{finding.explanation}</p>
+                                  {finding.suggestedRewrite && (
+                                    <div className="finding-rewrite">
+                                      <p><strong>Suggested rewrite:</strong> {finding.suggestedRewrite}</p>
+                                      {adoptedFindings[i] === 'rewrite' ? (
+                                        <span className="finding-applied-pill">
+                                          <CheckCircle2 size={12} aria-hidden="true" /> Applied — click Update PDF to recompile
+                                        </span>
+                                      ) : (
+                                        <div className="finding-adopt-row">
+                                          <button className="secondary finding-adopt-btn" type="button" onClick={() => adoptSuggestion(finding, i)}>
+                                            Adopt this wording
+                                          </button>
+                                          {findingErrors[i] && (
+                                            <span className="finding-inline-error">{findingErrors[i]}</span>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                  {(finding.supportingEvidenceIds || []).length > 0 && (
+                                    <div className="finding-evidence-refs">
+                                      {(finding.supportingEvidenceIds).map((id) => {
+                                        const ev = (project.citationBank || []).find((b) => b.id === id);
+                                        return (
+                                          <span key={id} className="finding-evidence-ref">
+                                            {ev ? (ev.citationKey || ev.title?.slice(0, 30)) : id}
+                                          </span>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                  {(finding.classification === 'needs_citation' || finding.classification === 'unsupported') && (() => {
+                                    const linkedId = findingLinks[i];
+                                    const linkedEntry = linkedId ? (project.citationBank || []).find((e) => e.id === linkedId) : null;
+                                    const matches = linkedId ? [] : findRelevantEvidence(finding.claim, project.citationBank || []);
+                                    return (
+                                      <div className="finding-resolve">
+                                        {linkedEntry ? (
+                                          <div className="finding-resolved-pill">
+                                            <CheckCircle2 size={13} aria-hidden="true" />
+                                            <span>Linked to <code>{linkedEntry.citationKey}</code></span>
+                                            {adoptedFindings[i] === 'cite' ? (
+                                              <span className="finding-cite-inserted">✓ <code>\cite{'{'}{ linkedEntry.citationKey}{'}'}</code> inserted — click Update PDF</span>
+                                            ) : (
+                                              <>
+                                                <button className="secondary finding-insert-cite-btn" type="button" onClick={() => insertCite(finding, i)}>
+                                                  Insert \cite{'{'}{'}'}
+                                                </button>
+                                                {findingErrors[i] && (
+                                                  <span className="finding-inline-error">{findingErrors[i]}</span>
+                                                )}
+                                              </>
+                                            )}
+                                            <button className="finding-unlink-btn" type="button" onClick={() => unlinkFinding(i)} title="Unlink">×</button>
+                                          </div>
+                                        ) : matches.length > 0 ? (
+                                          <>
+                                            <p className="finding-resolve-label">Evidence in your bank that may support this:</p>
+                                            {matches.map((ev) => (
+                                              <div key={ev.id} className="finding-match-card">
+                                                <div className="finding-match-top">
+                                                  <code className="citation-key">{ev.citationKey}</code>
+                                                  <span className="finding-match-title">{ev.title}</span>
+                                                </div>
+                                                <p className="finding-match-text">{ev.evidenceText.slice(0, 120)}{ev.evidenceText.length > 120 ? '…' : ''}</p>
+                                                <button className="secondary" type="button" onClick={() => linkFinding(i, ev.id)}>
+                                                  Use this evidence
+                                                </button>
+                                              </div>
+                                            ))}
+                                          </>
+                                        ) : (
+                                          <div className="finding-no-match">
+                                            <span>No matching evidence in your bank yet.</span>
+                                            <button className="secondary" type="button" onClick={openSelectedPapersModal} disabled={!selectedPapers.length}>
+                                              <BookOpen size={13} aria-hidden="true" />
+                                              Open paper reader to add evidence
+                                            </button>
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
+                                </li>
+                                );
+                              })}
+                            </ol>
+                          ) : (
+                            <p className="citation-empty">No findings returned. The proposal may already be well-scoped, or try adding evidence to the bank first.</p>
+                          )}
+                        </>
+                      ) : (
+                        <p className="citation-empty">Run Citation Review to analyse which claims in your proposal are supported, need citations, or are unsupported.</p>
+                      )}
+                    </section>
+                  </div>
                 ) : (
                   <div className="markdown-output">
                     <ReactMarkdown remarkPlugins={[remarkGfm]}>{result?.evaluationReport || ''}</ReactMarkdown>
@@ -1855,6 +2206,61 @@ function App() {
                           >
                             Open Source
                           </button>
+                        </div>
+
+                        <div className="evidence-form-section">
+                          <h3 className="evidence-form-title">
+                            <BookMarked size={15} aria-hidden="true" />
+                            Record Evidence
+                          </h3>
+                          <div className="evidence-form">
+                            <label className="evidence-label">
+                              Type
+                              <select
+                                value={evidenceDraft.type}
+                                onChange={(e) => setEvidenceDraft((d) => ({ ...d, type: e.target.value }))}
+                              >
+                                {['quote', 'figure', 'table', 'result', 'claim', 'limitation', 'future_work'].map((t) => (
+                                  <option key={t} value={t}>{t.replace('_', ' ')}</option>
+                                ))}
+                              </select>
+                            </label>
+                            <label className="evidence-label">
+                              Evidence
+                              <textarea
+                                className="evidence-textarea"
+                                value={evidenceDraft.text}
+                                onChange={(e) => setEvidenceDraft((d) => ({ ...d, text: e.target.value }))}
+                                placeholder="Quote, finding, figure description, or note from this paper…"
+                                rows={3}
+                              />
+                            </label>
+                            <label className="evidence-label">
+                              Supports (comma-separated topics)
+                              <input
+                                value={evidenceDraft.supports}
+                                onChange={(e) => setEvidenceDraft((d) => ({ ...d, supports: e.target.value }))}
+                                placeholder="e.g. emotion recognition, EEG classification"
+                              />
+                            </label>
+                            <label className="evidence-label">
+                              Citation key
+                              <input
+                                value={evidenceDraft.key}
+                                onChange={(e) => setEvidenceDraft((d) => ({ ...d, key: e.target.value }))}
+                                placeholder={`e.g. ${((activeSelectedPaper.authors?.[0] || '').split(' ').pop() || 'author').toLowerCase()}${activeSelectedPaper.year || ''}`}
+                              />
+                            </label>
+                            <button
+                              className="primary"
+                              type="button"
+                              disabled={!evidenceDraft.text.trim()}
+                              onClick={addToBank}
+                            >
+                              <BookMarked size={15} aria-hidden="true" />
+                              Add to Citation Bank
+                            </button>
+                          </div>
                         </div>
                       </>
                     ) : (
@@ -2105,6 +2511,22 @@ function suggestionIsAccepted(projectFieldValue, suggestionValue) {
   const field = String(projectFieldValue || '').toLowerCase();
   const val = String(suggestionValue || '').toLowerCase().slice(0, 100).trim();
   return val.length > 10 && field.includes(val);
+}
+
+function findRelevantEvidence(claim, citationBank) {
+  const stopwords = new Set(['about', 'which', 'their', 'there', 'these', 'those', 'where', 'while', 'other', 'between', 'through', 'during', 'before', 'after', 'could', 'would', 'should', 'might', 'have', 'this', 'that', 'with', 'from', 'they', 'been', 'were', 'will', 'more', 'than', 'into', 'also', 'several', 'particularly', 'concerning', 'existing', 'research', 'study', 'studies', 'paper', 'work']);
+  const claimWords = claim.toLowerCase().split(/\W+/).filter((w) => w.length > 4 && !stopwords.has(w));
+  if (!claimWords.length) return [];
+  return citationBank
+    .map((entry) => {
+      const haystack = [...(entry.supports || []), entry.evidenceText || '', entry.title || ''].join(' ').toLowerCase();
+      const score = claimWords.filter((w) => haystack.includes(w)).length;
+      return { entry, score };
+    })
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 3)
+    .map(({ entry }) => entry);
 }
 
 function isAbortError(error) {
