@@ -249,6 +249,68 @@ export async function generateProposal(payload) {
   return generateLocally(project, checklist);
 }
 
+const EVAL_REPORT_SYSTEM_PROMPT = `You are a research proposal quality reviewer. You will receive an existing LaTeX proposal and the project inputs used to generate it. Your job is to assess the proposal quality and return ONLY the evaluation fields — do NOT rewrite or reproduce the LaTeX.
+
+Return strict JSON with this exact shape:
+{
+  "evaluationReport": "Markdown report: summary, weak claims, gaps, timeline risks, revision priorities",
+  "complianceMatrix": [
+    { "requirement": "requirement text", "status": "Covered | Needs work", "evidence": "brief evidence from the proposal", "fix": "brief next action" }
+  ],
+  "questions": ["short clarifying question"]
+}
+
+Rules:
+- evaluationReport must be Markdown (headers, bullets). Include: Summary, Weak Claims, Missing Sections, Revision Priorities.
+- complianceMatrix must cover every item in the provided checklist.
+- questions should be 0–5 remaining clarifying questions about the project.
+- Do NOT return proposalLatex. Do NOT reproduce any LaTeX.`;
+
+export async function generateEvalReport(payload) {
+  const project = normalizePayload(payload.project || payload);
+  const proposalLatex = clean(payload.proposalLatex) || '';
+  const checklist = extractChecklist(project.requirements || DEFAULT_REQUIREMENTS);
+  log('generateEvalReport', `title="${project.title}" | latex=${proposalLatex.length} chars | api=${Boolean(process.env.LLM_API_KEY && process.env.LLM_API_URL)}`);
+
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
+    try {
+      const model = clean(process.env.LLM_MODEL) || 'gpt-4o-mini';
+      const promptPayload = {
+        task: 'eval-report',
+        project: {
+          title: project.title,
+          topic: project.topic,
+          problem: project.problem,
+          method: project.method,
+          timeline: project.timeline,
+          evaluation: project.evaluation
+        },
+        proposalLatex: truncateForModel(proposalLatex, 8000),
+        checklist
+      };
+      const content = await callModel({ systemPrompt: EVAL_REPORT_SYSTEM_PROMPT, payload: promptPayload, model, temperature: 0.1 });
+      const parsed = parseJsonContent(content);
+      const evalReport = clean(parsed.evaluationReport) || '# Evaluation Report\n\nNo report returned.';
+      const matrix = Array.isArray(parsed.complianceMatrix) && parsed.complianceMatrix.length
+        ? parsed.complianceMatrix.map((row) => ({
+          requirement: clean(row.requirement),
+          status: clean(row.status) || 'Needs work',
+          evidence: clean(row.evidence),
+          fix: clean(row.fix)
+        }))
+        : [];
+      const questions = Array.isArray(parsed.questions) ? parsed.questions.map(clean).filter(Boolean).slice(0, 5) : [];
+      return { mode: 'api', provider: process.env.LLM_API_URL, evaluationReport: evalReport, complianceMatrix: matrix, questions };
+    } catch (error) {
+      log('generateEvalReport', `LLM failed, using local fallback: ${error.message}`);
+    }
+  }
+
+  // Local fallback — deterministic assessment
+  const localResult = generateLocally(project, checklist);
+  return { mode: 'local-fallback', provider: 'template', evaluationReport: localResult.evaluationReport, complianceMatrix: localResult.complianceMatrix, questions: localResult.questions };
+}
+
 export async function critiqueProposal(payload) {
   log('critiqueProposal', `title="${payload.project?.title || payload.topic}" | api=${Boolean(process.env.LLM_API_KEY && process.env.LLM_API_URL)}`);
   const project = normalizePayload(payload.project || payload);
@@ -818,6 +880,7 @@ async function callOpenAiCompatible({ systemPrompt, payload, model, temperature 
         model: modelId,
         temperature,
         max_tokens: 4096,
+        response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: JSON.stringify(payload, null, 2) }
@@ -1433,9 +1496,42 @@ function parseJsonContent(content) {
     try { return JSON.parse(trimmed.slice(start, end + 1)); } catch { /* fall through */ }
   }
 
-  // 4. If it looks like raw LaTeX, salvage it
+  // 4. LaTeX escape fallback — the most common failure mode: the LLM embeds a LaTeX
+  //    document inside JSON but doesn't escape backslashes/quotes, making JSON.parse fail.
+  //    Extract the LaTeX document directly via regex, then try to parse the rest.
+  const latexMatch = trimmed.match(/\\documentclass[\s\S]*?\\end\{document\}/i);
+  if (latexMatch) {
+    const extractedLatex = latexMatch[0];
+    // Strip the LaTeX out and try to parse the remaining JSON fields
+    const withoutLatex = trimmed.replace(latexMatch[0], '""');
+    let extras = {};
+    try {
+      const partial = JSON.parse(withoutLatex.slice(withoutLatex.indexOf('{')));
+      extras = partial;
+    } catch { /* best effort */ }
+    log('parseJsonContent', `JSON parse failed but recovered LaTeX (${extractedLatex.length} chars) via regex`);
+    return {
+      proposalLatex: extractedLatex,
+      complianceMatrix: extras.complianceMatrix || [],
+      evaluationReport: extras.evaluationReport || '# Evaluation Report\n\nRecovered LaTeX from malformed response. Compliance details unavailable.',
+      questions: extras.questions || []
+    };
+  }
+
+  // 5. If it looks like raw LaTeX with no JSON at all, salvage the LaTeX
+  if (looksLikeLatex(trimmed)) {
+    log('parseJsonContent', 'Response is raw LaTeX without JSON wrapper — salvaging');
+    return {
+      proposalLatex: trimmed,
+      complianceMatrix: [],
+      evaluationReport: '# Evaluation Report\n\nModel returned raw LaTeX without JSON wrapper. Regenerate or check model output format.',
+      questions: []
+    };
+  }
+
+  log('parseJsonContent', `Parse failed entirely. Raw response (first 500 chars): ${trimmed.slice(0, 500)}`);
   return {
-    proposalLatex: looksLikeLatex(trimmed) ? trimmed : '',
+    proposalLatex: '',
     complianceMatrix: [],
     evaluationReport: '# Evaluation Report\n\nThe model response could not be parsed. Try regenerating.',
     questions: []

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookOpen,
   CheckCircle2,
@@ -130,6 +130,12 @@ function App() {
   const [reviewCycle, setReviewCycle] = useState(EMPTY_REVIEW_CYCLE);
   const [enhanceQueriesWithAI, setEnhanceQueriesWithAI] = useState(false);
 
+  const abortRef = useRef(null);
+  const gapAbortRef = useRef(null);
+  const reviewAbortRef = useRef(null);
+  const evalReportAbortRef = useRef(null);
+  const [evalReportStatus, setEvalReportStatus] = useState('idle');
+
   const litCtx = (proj) => proj.literatureContext || EMPTY_LITERATURE_CONTEXT;
 
   const matrixStats = useMemo(() => {
@@ -231,6 +237,10 @@ function App() {
   }
 
   async function startAgentForTopic(nextTopic) {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setStatus('starting');
     setError('');
     clearArtifacts();
@@ -239,7 +249,7 @@ function App() {
       const data = await postJson('/api/agent/start', {
         topic: nextTopic,
         requirements: DEFAULT_REQUIREMENTS
-      });
+      }, controller.signal);
 
       setProject({ ...EMPTY_PROJECT, ...data.project });
       setFieldSuggestions(data.fieldSuggestions || []);
@@ -258,7 +268,7 @@ function App() {
         maxPerQuery: 12,
         topPapers: 36,
         enhanceWithAI: enhanceQueriesWithAI
-      });
+      }, controller.signal);
       setLiterature({ ...EMPTY_LITERATURE, ...literatureData });
       setSelectedPaperIds([]);
       setGapResult(EMPTY_GAP_RESULT);
@@ -270,9 +280,15 @@ function App() {
       setActiveStage(1);
       setCustomNote('');
     } catch (requestError) {
+      if (isAbortError(requestError)) {
+        console.log('[LLM] Request cancelled by user: structure/start generation');
+        setRunLog((current) => [...current, logEntry('Canceled', 'Generation stopped.')]);
+        return;
+      }
       setError(readError(requestError));
     } finally {
       setStatus('idle');
+      abortRef.current = null;
     }
   }
 
@@ -280,8 +296,14 @@ function App() {
     const trimmed = customNote.trim();
     if (!trimmed) return;
 
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setStatus('answering');
     setError('');
+
+    const projectSnapshot = project;
 
     try {
       const data = await postJson('/api/agent/answer', {
@@ -294,25 +316,40 @@ function App() {
         },
         answer: trimmed,
         requirements: DEFAULT_REQUIREMENTS
-      });
+      }, controller.signal);
 
-      setProject((current) => mergeProjectStates(current, data.project));
+      const merged = mergeProjectStates(projectSnapshot, data.project);
+      const changedFields = computeChangedFields(projectSnapshot, merged);
+      setProject(merged);
       setQuestions(data.questions || []);
+      const updateMsg = changedFields.length > 0
+        ? `Updated: ${changedFields.join(', ')}.`
+        : 'No project fields were updated.';
       setRunLog((current) => [
         ...current,
-        logEntry('Update', data.runMessage || 'Integrated additional input into project state.')
+        logEntry('Update', updateMsg)
       ]);
       setCustomNote('');
       clearArtifacts();
       setActiveStage(2);
     } catch (requestError) {
+      if (isAbortError(requestError)) {
+        console.log('[LLM] Request cancelled by user: LLM integrate (answer agent question)');
+        setRunLog((current) => [...current, logEntry('Canceled', 'Integration stopped.')]);
+        return;
+      }
       setError(readError(requestError));
     } finally {
       setStatus('idle');
+      abortRef.current = null;
     }
   }
 
   async function generateProposal() {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     setStatus('drafting');
     setError('');
 
@@ -322,7 +359,7 @@ function App() {
         topic: project.topic || project.title,
         literatureContext: litCtx(project),
         requirements: DEFAULT_REQUIREMENTS
-      });
+      }, controller.signal);
       const nextPdfUrl = await exportPdfUrl(data.proposalLatex, project.title || 'proposal');
 
       setResult(data);
@@ -335,9 +372,15 @@ function App() {
       ]);
       setActiveStage(4);
     } catch (requestError) {
+      if (isAbortError(requestError)) {
+        console.log('[LLM] Request cancelled by user: proposal draft generation');
+        setRunLog((current) => [...current, logEntry('Canceled', 'Draft generation stopped.')]);
+        return;
+      }
       setError(readError(requestError));
     } finally {
       setStatus('idle');
+      abortRef.current = null;
     }
   }
 
@@ -432,6 +475,44 @@ function App() {
     setReviewCycle(EMPTY_REVIEW_CYCLE);
   }
 
+  function cancelStatus() { abortRef.current?.abort(); }
+  function cancelGap() { gapAbortRef.current?.abort(); }
+  function cancelReview() { reviewAbortRef.current?.abort(); }
+  function cancelEvalReport() { evalReportAbortRef.current?.abort(); }
+
+  async function retryEvalReport() {
+    if (!result?.proposalLatex) return;
+    evalReportAbortRef.current?.abort();
+    const controller = new AbortController();
+    evalReportAbortRef.current = controller;
+    setEvalReportStatus('loading');
+    setError('');
+    try {
+      const data = await postJson('/api/eval-report', {
+        project,
+        proposalLatex: result.proposalLatex
+      }, controller.signal);
+      setResult((current) => ({
+        ...current,
+        evaluationReport: data.evaluationReport || current.evaluationReport,
+        complianceMatrix: Array.isArray(data.complianceMatrix) && data.complianceMatrix.length
+          ? data.complianceMatrix
+          : current.complianceMatrix
+      }));
+      setRunLog((current) => [...current, logEntry('Eval Report', 'Evaluation report regenerated.')]);
+    } catch (requestError) {
+      if (isAbortError(requestError)) {
+        console.log('[LLM] Request cancelled by user: eval report retry');
+        setRunLog((current) => [...current, logEntry('Canceled', 'Eval report generation stopped.')]);
+        return;
+      }
+      setError(readError(requestError));
+    } finally {
+      setEvalReportStatus('idle');
+      evalReportAbortRef.current = null;
+    }
+  }
+
   function togglePaperSelection(paper) {
     const paperKey = paperStableId(paper);
 
@@ -493,6 +574,10 @@ function App() {
       return;
     }
 
+    gapAbortRef.current?.abort();
+    const controller = new AbortController();
+    gapAbortRef.current = controller;
+
     setGapStatus('running');
     setError('');
 
@@ -500,7 +585,7 @@ function App() {
       const data = await postJson('/api/research-gaps', {
         topic: topicInput || project.title || project.topic,
         papers: selectedPapers.map(curatedPaper)
-      });
+      }, controller.signal);
       setGapResult({ ...EMPTY_GAP_RESULT, ...data });
       setSelectedGapId(data.rankedGaps?.[0]?.id || '');
       setRunLog((current) => [
@@ -508,9 +593,15 @@ function App() {
         logEntry('Continuation', data.runMessage || `Found ${data.rankedGaps?.length || 0} continuation suggestions.`)
       ]);
     } catch (requestError) {
+      if (isAbortError(requestError)) {
+        console.log('[LLM] Request cancelled by user: continuation/gap suggestions');
+        setRunLog((current) => [...current, logEntry('Canceled', 'Continuation suggestions stopped.')]);
+        return;
+      }
       setError(readError(requestError));
     } finally {
       setGapStatus('idle');
+      gapAbortRef.current = null;
     }
   }
 
@@ -593,6 +684,10 @@ function App() {
       return;
     }
 
+    reviewAbortRef.current?.abort();
+    const controller = new AbortController();
+    reviewAbortRef.current = controller;
+
     setReviewStatus('critiquing');
     setError('');
 
@@ -603,7 +698,7 @@ function App() {
         proposalLatex: result.proposalLatex,
         evaluationReport: result.evaluationReport,
         priorCritiques: previousCritiques
-      });
+      }, controller.signal);
 
       const critiques = Array.isArray(data.critiques) ? data.critiques : [];
       const round = {
@@ -625,9 +720,15 @@ function App() {
       ]);
       setActiveTab('evaluation');
     } catch (requestError) {
+      if (isAbortError(requestError)) {
+        console.log('[LLM] Request cancelled by user: reviewer critique');
+        setRunLog((current) => [...current, logEntry('Canceled', 'Reviewer critique stopped.')]);
+        return;
+      }
       setError(readError(requestError));
     } finally {
       setReviewStatus('idle');
+      reviewAbortRef.current = null;
     }
   }
 
@@ -649,40 +750,34 @@ function App() {
       return;
     }
 
-    console.log('[applyReviewChanges] starting | selectedCritiques:', selectedCritiques.length, '| userInstruction:', reviewCycle.userInstruction.slice(0, 60));
+    reviewAbortRef.current?.abort();
+    const controller = new AbortController();
+    reviewAbortRef.current = controller;
+
     setReviewStatus('revising');
     setError('');
 
     try {
-      console.log('[applyReviewChanges] → calling /api/review/revise');
       const revision = await postJson('/api/review/revise', {
         project,
         selectedCritiques,
         userInstruction: reviewCycle.userInstruction
-      });
-      console.log('[applyReviewChanges] ← revision ok | mode:', revision.mode, '| changes:', revision.appliedChanges?.length);
+      }, controller.signal);
 
       const revisedProject = { ...EMPTY_PROJECT, ...(revision.project || project) };
 
-      setProject(revisedProject);
-      setReviewCycle((current) => ({
-        ...current,
-        userInstruction: ''
-      }));
-
-      console.log('[applyReviewChanges] → calling /api/proposal to regenerate');
       const nextResult = await postJson('/api/proposal', {
         ...revisedProject,
         topic: revisedProject.topic || revisedProject.title,
         literatureContext: litCtx(revisedProject),
         requirements: DEFAULT_REQUIREMENTS
-      });
-      console.log('[applyReviewChanges] ← proposal ok | mode:', nextResult.mode, '| latex chars:', nextResult.proposalLatex?.length);
+      }, controller.signal);
 
-      console.log('[applyReviewChanges] → exporting PDF');
       const nextPdfUrl = await exportPdfUrl(nextResult.proposalLatex, revisedProject.title || 'proposal');
-      console.log('[applyReviewChanges] ← PDF exported');
 
+      // Only update state after all three operations succeed
+      setProject(revisedProject);
+      setReviewCycle((current) => ({ ...current, userInstruction: '' }));
       setResult(nextResult);
       updatePdfUrl(nextPdfUrl);
       setRunLog((current) => [
@@ -691,12 +786,16 @@ function App() {
         logEntry('Draft', `Regenerated proposal after review cycle using ${nextResult.mode}.`)
       ]);
       setActiveTab('evaluation');
-      console.log('[applyReviewChanges] done');
     } catch (requestError) {
-      console.error('[applyReviewChanges] ERROR:', requestError.message, requestError);
+      if (isAbortError(requestError)) {
+        console.log('[LLM] Request cancelled by user: review revision + re-draft');
+        setRunLog((current) => [...current, logEntry('Canceled', 'Review revision stopped.')]);
+        return;
+      }
       setError(readError(requestError));
     } finally {
       setReviewStatus('idle');
+      reviewAbortRef.current = null;
     }
   }
 
@@ -810,10 +909,16 @@ function App() {
                 {status === 'starting' ? <Loader2 className="spin" size={18} aria-hidden="true" /> : <Play size={18} aria-hidden="true" />}
                 Structure Idea
               </button>
-              <button className="secondary" disabled={status !== 'idle'} onClick={startSampleAgent} type="button">
-                <Sparkles size={18} aria-hidden="true" />
-                Sample
-              </button>
+              {status === 'starting' ? (
+                <button className="secondary" type="button" onClick={cancelStatus} aria-label="Cancel">
+                  <X size={18} aria-hidden="true" /> Cancel
+                </button>
+              ) : (
+                <button className="secondary" disabled={status !== 'idle'} onClick={startSampleAgent} type="button">
+                  <Sparkles size={18} aria-hidden="true" />
+                  Sample
+                </button>
+              )}
               <button className="secondary icon-button" onClick={reset} type="button" aria-label="Reset">
                 <RefreshCw size={18} aria-hidden="true" />
               </button>
@@ -1054,10 +1159,17 @@ function App() {
                     onChange={(event) => setCustomNote(event.target.value)}
                     placeholder={currentQuestion?.question || 'Add a detail the options missed.'}
                   />
-                  <button className="primary" disabled={!customNote.trim() || status !== 'idle'} onClick={submitCustomNote} type="button">
-                    {status === 'answering' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
-                    Let LLM Integrate
-                  </button>
+                  <div className="deck-actions">
+                    <button className="primary" disabled={!customNote.trim() || status !== 'idle'} onClick={submitCustomNote} type="button">
+                      {status === 'answering' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
+                      Let LLM Integrate
+                    </button>
+                    {status === 'answering' ? (
+                      <button className="secondary" type="button" onClick={cancelStatus}>
+                        <X size={16} aria-hidden="true" /> Cancel
+                      </button>
+                    ) : null}
+                  </div>
                 </section>
               </section>
 
@@ -1131,25 +1243,32 @@ function App() {
                 <section className="gap-panel gap-decision-card">
                   <div className="gap-decision-header">
                     <h3>Continuation Suggestions</h3>
-                    <button
-                      className="secondary"
-                      type="button"
-                      onClick={detectResearchGaps}
-                      disabled={gapStatus !== 'idle' || selectedPaperCount < 3}
-                    >
-                      {gapStatus === 'running' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                      Suggest Continuations
-                    </button>
+                    <div className="deck-actions">
+                      <button
+                        className="secondary"
+                        type="button"
+                        onClick={detectResearchGaps}
+                        disabled={gapStatus !== 'idle' || selectedPaperCount < 3}
+                      >
+                        {gapStatus === 'running' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                        Suggest Continuations
+                      </button>
+                      {gapStatus === 'running' ? (
+                        <button className="secondary" type="button" onClick={cancelGap}>
+                          <X size={16} aria-hidden="true" /> Cancel
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <p className="gap-hint">Uses your selected papers to find continuation directions from limitations and future work.</p>
                   <p className="gap-hint">Selected papers: {selectedPaperCount} {selectedPaperCount < 3 ? '(select at least 3)' : ''}</p>
                   {gapResult.rankedGaps?.length ? (
                     <ol className="gap-list">
                       {gapResult.rankedGaps.map((gap) => {
-                        const isSelected = activeGap?.id === gap.id;
+                        const isAdopted = litCtx(project).continuationIdeas.some((idea) => idea.id === gap.id);
 
                         return (
-                          <li key={gap.id} className={isSelected ? 'gap-item gap-item-active' : 'gap-item'}>
+                          <li key={gap.id} className={['gap-item', isAdopted ? 'gap-item-adopted' : ''].filter(Boolean).join(' ')}>
                             <div className="gap-item-topline">
                               <strong>{gap.title}</strong>
                               <span className="priority medium">{gap.feasibility || gap.overallScore}</span>
@@ -1164,11 +1283,14 @@ function App() {
                               <p className="gap-check gap-question">Research question: {gap.possibleResearchQuestion || gap.researchQuestion}</p>
                             ) : null}
                             <div className="deck-actions">
-                              <button className="secondary" type="button" onClick={() => setSelectedGapId(gap.id)}>
-                                Preview
-                              </button>
-                              <button className="primary" type="button" onClick={() => adoptGap(gap)}>
-                                Add to Proposal
+                              <button
+                                className={isAdopted ? 'secondary accepted' : 'primary'}
+                                type="button"
+                                onClick={() => { if (!isAdopted) adoptGap(gap); }}
+                                disabled={isAdopted}
+                              >
+                                {isAdopted ? <CheckCircle2 size={16} aria-hidden="true" /> : null}
+                                {isAdopted ? 'Added to Proposal' : 'Add to Proposal'}
                               </button>
                             </div>
                           </li>
@@ -1197,10 +1319,17 @@ function App() {
                     <textarea value={project[field] || ''} onChange={(event) => updateProjectField(field, event.target.value)} />
                   </label>
                 ))}
-                <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
-                  {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
-                  Generate Proposal
-                </button>
+                <div className="deck-actions">
+                  <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
+                    {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
+                    Generate Proposal
+                  </button>
+                  {status === 'drafting' ? (
+                    <button className="secondary" type="button" onClick={cancelStatus}>
+                      <X size={16} aria-hidden="true" /> Cancel
+                    </button>
+                  ) : null}
+                </div>
               </section>
             </div>
           ) : null}
@@ -1210,10 +1339,17 @@ function App() {
               <section className="workspace-panel state-panel">
                 <PanelHeader title="Draft Proposal" meta={project.title ? 'Ready to generate' : 'Needs title'} />
                 <p className="stage-copy">Generate proposal artifacts from the assembled project state.</p>
-                <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
-                  {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
-                  Generate Proposal
-                </button>
+                <div className="deck-actions">
+                  <button className="primary" disabled={!project.title || status !== 'idle'} onClick={generateProposal} type="button">
+                    {status === 'drafting' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
+                    Generate Proposal
+                  </button>
+                  {status === 'drafting' ? (
+                    <button className="secondary" type="button" onClick={cancelStatus}>
+                      <X size={16} aria-hidden="true" /> Cancel
+                    </button>
+                  ) : null}
+                </div>
                 {result ? <p className="stage-copy">A draft already exists. Open Review for matrix and critique outputs.</p> : null}
               </section>
             </div>
@@ -1287,19 +1423,42 @@ function App() {
                     <div className="markdown-output">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>{result?.evaluationReport || ''}</ReactMarkdown>
                     </div>
+                    <div className="deck-actions" style={{ marginBottom: '1rem' }}>
+                      <button
+                        className="secondary"
+                        type="button"
+                        onClick={retryEvalReport}
+                        disabled={evalReportStatus !== 'idle' || !result?.proposalLatex}
+                      >
+                        {evalReportStatus === 'loading' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                        {evalReportStatus === 'loading' ? 'Generating…' : 'Retry Evaluation Report'}
+                      </button>
+                      {evalReportStatus === 'loading' ? (
+                        <button className="secondary" type="button" onClick={cancelEvalReport}>
+                          <X size={16} aria-hidden="true" /> Cancel
+                        </button>
+                      ) : null}
+                    </div>
 
                     <section className="review-cycle-panel">
                       <div className="review-cycle-header">
                         <h3>Reviewer Agent Cycle</h3>
-                        <button
-                          className="secondary"
-                          type="button"
-                          onClick={runReviewerCritique}
-                          disabled={reviewStatus !== 'idle' || !result?.proposalLatex}
-                        >
-                          {reviewStatus === 'critiquing' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                          Run Reviewer Critique
-                        </button>
+                        <div className="deck-actions">
+                          <button
+                            className="secondary"
+                            type="button"
+                            onClick={runReviewerCritique}
+                            disabled={reviewStatus !== 'idle' || !result?.proposalLatex}
+                          >
+                            {reviewStatus === 'critiquing' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                            Run Reviewer Critique
+                          </button>
+                          {reviewStatus === 'critiquing' ? (
+                            <button className="secondary" type="button" onClick={cancelReview}>
+                              <X size={16} aria-hidden="true" /> Cancel
+                            </button>
+                          ) : null}
+                        </div>
                       </div>
                       <p className="review-cycle-hint">Cycle pattern: critique {'->'} change {'->'} critique {'->'} change. You control which fixes are applied.</p>
 
@@ -1344,15 +1503,22 @@ function App() {
                         />
                       </label>
 
-                      <button
-                        className="primary"
-                        type="button"
-                        onClick={applyReviewChanges}
-                        disabled={reviewStatus !== 'idle' || (!selectedCritiques.length && !reviewCycle.userInstruction.trim())}
-                      >
-                        {reviewStatus === 'revising' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                        Apply Selected Changes and Regenerate
-                      </button>
+                      <div className="deck-actions">
+                        <button
+                          className="primary"
+                          type="button"
+                          onClick={applyReviewChanges}
+                          disabled={reviewStatus !== 'idle' || (!selectedCritiques.length && !reviewCycle.userInstruction.trim())}
+                        >
+                          {reviewStatus === 'revising' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
+                          Apply Selected Changes and Regenerate
+                        </button>
+                        {reviewStatus === 'revising' ? (
+                          <button className="secondary" type="button" onClick={cancelReview}>
+                            <X size={16} aria-hidden="true" /> Cancel
+                          </button>
+                        ) : null}
+                      </div>
                     </section>
                   </div>
                 ) : (
@@ -1446,11 +1612,12 @@ function App() {
   );
 }
 
-async function postJson(url, body) {
+async function postJson(url, body, signal) {
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal
   });
   const data = await response.json();
 
@@ -1678,6 +1845,19 @@ function suggestionIsAccepted(projectFieldValue, suggestionValue) {
   const field = String(projectFieldValue || '').toLowerCase();
   const val = String(suggestionValue || '').toLowerCase().slice(0, 100).trim();
   return val.length > 10 && field.includes(val);
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError' || error?.message === 'The user aborted a request.';
+}
+
+function computeChangedFields(before, after) {
+  const fields = ['title', 'topic', 'problem', 'method', 'timeline', 'evaluation', 'resources', 'references'];
+  return fields.filter((field) => {
+    const a = String(before[field] || '').trim();
+    const b = String(after[field] || '').trim();
+    return b && b !== a;
+  });
 }
 
 export default App;
