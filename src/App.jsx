@@ -21,6 +21,8 @@ import {
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useAuth } from './context/useAuth.js';
+import { db } from './firebase.js';
+import { collection, doc, setDoc, getDoc, getDocs, deleteDoc, query, orderBy } from 'firebase/firestore';
 
 const DEFAULT_REQUIREMENTS = `Proposal must include:
 - Project title
@@ -198,6 +200,58 @@ function App() {
     loadSavedMemory({ silent: true });
     setMemoryReady(true);
   }, []);
+
+  // Clear all workspace state on logout (not on initial mount while auth is still loading).
+  useEffect(() => {
+    if (authLoading || user !== null) return;
+    setTopicInput('');
+    setProject(EMPTY_PROJECT);
+    setFieldSuggestions([]);
+    setDecisions([]);
+    setQuestions([]);
+    setCustomNote('');
+    setResult(null);
+    setPdfUrl('');
+    setRunLog([]);
+    setStatus('idle');
+    setError('');
+    setActiveTab('evaluation');
+    setSuggestionIndex(0);
+    setDecisionIndex(0);
+    setMemorySavedAt('');
+    setLiterature(EMPTY_LITERATURE);
+    setSelectedPaperIds([]);
+    setGapResult(EMPTY_GAP_RESULT);
+    setSelectedGapId('');
+    setReviewCycle(EMPTY_REVIEW_CYCLE);
+    setPatchResult(null);
+    setCitationReview(null);
+    setFindingLinks({});
+    setAdoptedFindings({});
+    setFindingErrors({});
+    setLatexEditorValue('');
+    setSaves([]);
+    setSavesOpen(false);
+    localStorage.removeItem(SAVES_KEY);
+    localStorage.removeItem(MEMORY_KEY);
+  }, [user, authLoading]);
+
+  // When a user logs in, load their latest workspace from Firestore (overrides localStorage).
+  useEffect(() => {
+    if (!user?.uid) return;
+    (async () => {
+      try {
+        const memSnap = await getDoc(doc(db, 'users', user.uid, 'memory', 'current'));
+        if (memSnap.exists()) {
+          const { snapshot } = memSnap.data();
+          await applySnapshot(snapshot);
+          setMemorySavedAt(snapshot?.savedAt || '');
+        }
+      } catch (err) {
+        console.error('[firestore] load memory error:', err);
+      }
+    })();
+  }, [user?.uid]);
 
 
   useEffect(() => {
@@ -1111,15 +1165,11 @@ function App() {
     try { return JSON.parse(localStorage.getItem(SAVES_KEY) || '[]'); } catch { return []; }
   }
 
-  function manualSave() {
+  async function manualSave() {
     const snapshot = buildSnapshot();
+    const id = Date.now();
+    const entry = { id, savedAt: snapshot.savedAt, proposalTitle: project.title || '', snapshot };
     const existing = readSavesFromStorage();
-    const entry = {
-      id: Date.now(),
-      savedAt: snapshot.savedAt,
-      proposalTitle: project.title || '',
-      snapshot
-    };
     const updated = [entry, ...existing].slice(0, MAX_SAVES);
     localStorage.setItem(SAVES_KEY, JSON.stringify(updated));
     localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
@@ -1128,14 +1178,38 @@ function App() {
     setTimeout(() => setSavedFlash(false), 2000);
     setMenuOpen(false);
     setRunLog((current) => [...current, logEntry('Save', `Version #${updated.length} saved${entry.proposalTitle ? ` — ${entry.proposalTitle}` : ''}.`)]);
+    if (user?.uid) {
+      try {
+        // JSON round-trip strips undefined values which Firestore rejects
+        const toFs = (obj) => JSON.parse(JSON.stringify(obj));
+        await setDoc(doc(db, 'users', user.uid, 'saves', String(id)), toFs(entry));
+        await setDoc(doc(db, 'users', user.uid, 'memory', 'current'), { snapshot: toFs(snapshot) });
+      } catch (err) {
+        console.error('[firestore] save error:', err);
+        setError('Save stored locally only — Firestore write failed. Check Firebase rules.');
+      }
+    }
   }
   // Keep ref in sync so the keyboard shortcut always calls the latest version
   manualSaveRef.current = manualSave;
 
-  function openSavesPicker() {
-    setSaves(readSavesFromStorage());
-    setSavesOpen(true);
+  async function openSavesPicker() {
     setMenuOpen(false);
+    setSaves([]);
+    setSavesOpen(true);
+    if (user?.uid) {
+      try {
+        const snap = await getDocs(query(collection(db, 'users', user.uid, 'saves'), orderBy('savedAt', 'desc')));
+        const fsSaves = snap.docs.map(d => d.data());
+        // Fall back to localStorage if Firestore has nothing (e.g. rules not yet configured)
+        setSaves(fsSaves.length > 0 ? fsSaves : readSavesFromStorage());
+      } catch (err) {
+        console.error('[firestore] load saves error:', err);
+        setSaves(readSavesFromStorage());
+      }
+    } else {
+      setSaves(readSavesFromStorage());
+    }
   }
 
   async function restoreSave(entry) {
@@ -1144,22 +1218,40 @@ function App() {
     setMemorySavedAt(entry.savedAt);
     setSavesOpen(false);
     setRunLog((current) => [...current, logEntry('Restore', `Restored${entry.proposalTitle ? ` — ${entry.proposalTitle}` : ''}`)]);
+    if (user?.uid) {
+      try {
+        await setDoc(doc(db, 'users', user.uid, 'memory', 'current'), { snapshot: entry.snapshot });
+      } catch (err) { console.error('[firestore] restore write error:', err); }
+    }
   }
 
-  function deleteSave(id) {
+  async function deleteSave(id) {
     if (!window.confirm('Delete this save?\n\nThis cannot be undone.')) return;
     const updated = saves.filter((s) => s.id !== id);
     localStorage.setItem(SAVES_KEY, JSON.stringify(updated));
     setSaves(updated);
+    if (user?.uid) {
+      try {
+        await deleteDoc(doc(db, 'users', user.uid, 'saves', String(id)));
+      } catch (err) { console.error('[firestore] delete error:', err); }
+    }
   }
 
-  function clearAllSaves() {
+  async function clearAllSaves() {
     if (!window.confirm('Clear all saves?\n\nThis permanently deletes every saved version and cannot be undone.')) return;
     localStorage.removeItem(SAVES_KEY);
     localStorage.removeItem(MEMORY_KEY);
     setMemorySavedAt('');
+    setSaves([]);
     setMenuOpen(false);
     setRunLog((current) => [...current, logEntry('Clear', 'All saves cleared.')]);
+    if (user?.uid) {
+      try {
+        const snap = await getDocs(collection(db, 'users', user.uid, 'saves'));
+        await Promise.all(snap.docs.map(d => deleteDoc(d.ref)));
+        await deleteDoc(doc(db, 'users', user.uid, 'memory', 'current'));
+      } catch (err) { console.error('[firestore] clear error:', err); }
+    }
   }
 
   if (authLoading) {
@@ -1221,7 +1313,7 @@ function App() {
                 <span className="nav-user-name">{user.displayName}</span>
                 <span className="nav-user-email">{user.email}</span>
               </div>
-              <button className="nav-avatar-btn" type="button" onClick={logout} title="Sign out">
+              <button className="nav-avatar-btn" type="button" onClick={() => { if (window.confirm('Sign out?')) logout(); }} title="Sign out">
                 {user.photoURL
                   ? <img src={user.photoURL} alt={user.displayName} className="nav-avatar" referrerPolicy="no-referrer" />
                   : <UserCircle size={36} strokeWidth={1.5} />}
