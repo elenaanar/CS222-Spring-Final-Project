@@ -14,6 +14,7 @@ import {
 } from './proposalGenerator.js';
 import { detectResearchGaps } from './researchGapDetector.js';
 import { reviewCitations } from './citationReviewer.js';
+import { planFigures, generateFigure } from './figurePlanner.js';
 
 const app = express();
 const port = Number(process.env.PORT || 8787);
@@ -233,6 +234,32 @@ app.post('/api/citations/review', async (request, response) => {
       error: 'Citation review failed.',
       detail: error instanceof Error ? error.message : String(error)
     });
+  }
+});
+
+app.post('/api/figures/plan', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    if (!String(payload.proposalLatex || '').trim()) {
+      response.status(400).json({ error: 'proposalLatex is required.' });
+      return;
+    }
+    response.json(await planFigures(payload));
+  } catch (error) {
+    response.status(500).json({ error: 'Figure planning failed.', detail: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/figures/generate', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    if (!payload.suggestion?.type) {
+      response.status(400).json({ error: 'suggestion.type is required.' });
+      return;
+    }
+    response.json(await generateFigure(payload));
+  } catch (error) {
+    response.status(500).json({ error: 'Figure generation failed.', detail: error instanceof Error ? error.message : String(error) });
   }
 });
 

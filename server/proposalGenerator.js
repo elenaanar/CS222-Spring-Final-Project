@@ -188,20 +188,20 @@ Rules:
 - Return only JSON.`;
 
 const FIELD_TO_SECTION_HINTS = {
-  abstract:   ['abstract'],
-  problem:    ['Motivation', 'Gap', 'Problem', 'Introduction'],
+  abstract: ['abstract'],
+  problem: ['Motivation', 'Gap', 'Problem', 'Introduction'],
   motivation: ['Motivation', 'Gap', 'Problem', 'Introduction'],
-  topic:      ['Motivation', 'Gap', 'Project Goal', 'Introduction'],
-  goal:       ['Project Goal', 'Goal', 'Objective', 'Introduction'],
-  method:     ['Method', 'Methodology', 'Approach', 'Proposed'],
+  topic: ['Motivation', 'Gap', 'Project Goal', 'Introduction'],
+  goal: ['Project Goal', 'Goal', 'Objective', 'Introduction'],
+  method: ['Method', 'Methodology', 'Approach', 'Proposed'],
   evaluation: ['Evaluation', 'Expected Results', 'Baselines', 'Milestones'],
   milestones: ['Expected Results', 'Milestones', 'Timeline', 'Schedule'],
-  timeline:   ['Timeline', 'Milestones', 'Expected Results', 'Schedule'],
-  resources:  ['Resources', 'Feasibility', 'Budget'],
+  timeline: ['Timeline', 'Milestones', 'Expected Results', 'Schedule'],
+  resources: ['Resources', 'Feasibility', 'Budget'],
   references: ['References', 'Related Work', 'Background', 'Assumptions'],
-  assumptions:['References', 'Assumptions', 'Limitations'],
-  risks:      ['Risks and Mitigation', 'Risks', 'Limitations', 'Mitigation'],
-  title:      ['Motivation', 'Project Goal']
+  assumptions: ['References', 'Assumptions', 'Limitations'],
+  risks: ['Risks and Mitigation', 'Risks', 'Limitations', 'Mitigation'],
+  title: ['Motivation', 'Project Goal']
 };
 
 const BANNED_REVIEW_LANGUAGE = [
@@ -281,6 +281,24 @@ function replaceLatexSection(latex, section, newContent) {
   return latex.slice(0, section.startIndex) + newContent + latex.slice(section.endIndex);
 }
 
+function stripSentencesContaining(text, phrase) {
+  const lower = phrase.toLowerCase();
+  return text
+    .split('\n')
+    .map((line) => {
+      if (!line.toLowerCase().includes(lower)) return line;
+      // Try to remove just the offending sentence within the line
+      const stripped = line
+        .split(/(?<=[.!?])\s+/)
+        .filter((s) => !s.toLowerCase().includes(lower))
+        .join(' ');
+      return stripped;
+    })
+    .filter((line, i, arr) => !(line.trim() === '' && arr[i - 1]?.trim() === ''))
+    .join('\n')
+    .trim();
+}
+
 function validatePatchedSection(sectionName, rawContent) {
   let content = stripCodeFence(clean(rawContent));
   if (!content) return null;
@@ -291,21 +309,23 @@ function validatePatchedSection(sectionName, rawContent) {
     return null;
   }
 
-  // Reject banned review language leaking into proposal prose
-  const reviewLang = BANNED_REVIEW_LANGUAGE.find((phrase) =>
-    content.toLowerCase().includes(phrase)
-  );
-  if (reviewLang) {
-    log('validatePatch', `reviewer language "${reviewLang}" found in "${sectionName}" — rejecting`);
-    return null;
+  // Strip banned review language leaking into proposal prose
+  for (const phrase of BANNED_REVIEW_LANGUAGE) {
+    if (content.toLowerCase().includes(phrase)) {
+      log('validatePatch', `reviewer language "${phrase}" in "${sectionName}" — stripping sentence`);
+      content = stripSentencesContaining(content, phrase);
+    }
   }
 
-  // Reject banned app-topic phrases
-  const banned = BANNED_PHRASES.find((phrase) => content.toLowerCase().includes(phrase));
-  if (banned) {
-    log('validatePatch', `banned phrase "${banned}" in "${sectionName}" — rejecting`);
-    return null;
+  // Strip banned app-topic phrases
+  for (const phrase of BANNED_PHRASES) {
+    if (content.toLowerCase().includes(phrase)) {
+      log('validatePatch', `banned phrase "${phrase}" in "${sectionName}" — stripping sentence`);
+      content = stripSentencesContaining(content, phrase);
+    }
   }
+
+  if (!content.trim()) return null;
 
   // Restore section heading if the model dropped it
   const isAbstract = sectionName.toLowerCase() === 'abstract';
@@ -829,10 +849,18 @@ function reviewQuestionFromDimension(value) {
   const dimension = clean(value).toLowerCase();
   if (dimension.includes('novel')) return 'Is the question actually novel?';
   if (dimension.includes('scope')) return 'Is the scope too broad?';
-  if (dimension.includes('method')) return 'Is the method realistic?';
+  if (dimension.includes('method')) return 'Is the method realistic given the timeline?';
   if (dimension.includes('evaluation')) return 'Is the evaluation convincing?';
   if (dimension.includes('baseline')) return 'Are there missing baselines?';
   if (dimension.includes('contribution')) return 'Are the expected contributions overstated?';
+  if (dimension.includes('milestone')) return 'Are milestones concrete and time-bound?';
+  if (dimension.includes('resource')) return 'Are compute and data requirements specified and accessible?';
+  if (dimension.includes('assumption')) return 'Are core assumptions explicitly stated?';
+  if (dimension.includes('goal')) return 'Is the goal specific and falsifiable?';
+  if (dimension.includes('abstract')) return 'Does the abstract clearly summarise the gap and contribution?';
+  if (dimension.includes('risk')) return 'Are the identified risks adequate and concretely mitigated?';
+  if (dimension.includes('reference')) return 'Are prior-work claims backed by references?';
+  if (dimension.includes('motivation')) return 'Is the motivation grounded in a concrete real-world problem?';
   return 'What is the strongest remaining weakness in this proposal?';
 }
 
@@ -1160,7 +1188,7 @@ async function callModel({ systemPrompt, payload, model, temperature }) {
   return result;
 }
 
-async function callGemini({ systemPrompt, payload, model, temperature }) {
+async function callGemini({ systemPrompt, payload, model, temperature, _attempt = 0 }) {
   const baseUrl = clean(process.env.LLM_API_URL) || 'https://generativelanguage.googleapis.com/v1beta';
   const endpoint = `${baseUrl.replace(/\/$/, '')}/models/${encodeURIComponent(model)}:generateContent`;
   const response = await fetch(endpoint, {
@@ -1189,7 +1217,17 @@ async function callGemini({ systemPrompt, payload, model, temperature }) {
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data?.error?.message || `Gemini API returned ${response.status}`);
+    const msg = data?.error?.message || `Gemini API returned ${response.status}`;
+    // Rate-limited: parse the suggested wait time and retry up to 2 times
+    if (response.status === 429 && _attempt < 2) {
+      const waitMatch = msg.match(/retry in ([\d.]+)s/i);
+      const waitMs = waitMatch ? Math.min(Math.ceil(parseFloat(waitMatch[1])) * 1000 + 1000, 65000) : 20000;
+      log('callGemini', `Rate limited — waiting ${Math.round(waitMs / 1000)}s then retrying (attempt ${_attempt + 1}/2)`);
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+      return callGemini({ systemPrompt, payload, model, temperature, _attempt: _attempt + 1 });
+    }
+    log('callGemini', `API error ${response.status}: ${msg}`);
+    throw new Error(msg);
   }
 
   const content = data?.candidates?.[0]?.content?.parts
@@ -1304,6 +1342,8 @@ function buildLocalProposalLatex(project) {
 \usepackage[hidelinks]{hyperref}
 \usepackage{enumitem}
 \setlist{nosep}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric}
 \title{${escapeLatex(title)}}
 \author{}
 \date{}
@@ -1817,6 +1857,35 @@ function readModelContent(data) {
   return JSON.stringify(data);
 }
 
+function repairJsonString(str) {
+  let result = '';
+  let inString = false;
+  let i = 0;
+  while (i < str.length) {
+    const ch = str[i];
+    if (!inString) {
+      result += ch;
+      if (ch === '"') inString = true;
+      i++;
+      continue;
+    }
+    if (ch === '\\') {
+      const next = str[i + 1];
+      if (next === undefined) { result += '\\\\'; i++; }
+      else if ('"\\/bfnrtu'.includes(next)) { result += ch + next; i += 2; }
+      else { result += '\\\\' + next; i += 2; }
+      continue;
+    }
+    if (ch === '"') { inString = false; result += ch; i++; continue; }
+    if (ch === '\n') { result += '\\n'; i++; continue; }
+    if (ch === '\r') { result += '\\r'; i++; continue; }
+    if (ch === '\t') { result += '\\t'; i++; continue; }
+    result += ch;
+    i++;
+  }
+  return result;
+}
+
 function parseJsonContent(content) {
   const trimmed = clean(content);
 
@@ -1824,16 +1893,23 @@ function parseJsonContent(content) {
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   if (fenced?.[1]) {
     try { return JSON.parse(fenced[1]); } catch { /* fall through */ }
+    try { return JSON.parse(repairJsonString(fenced[1])); } catch { /* fall through */ }
   }
 
   // 2. Try the raw content directly
-  try { return JSON.parse(trimmed); } catch { /* fall through */ }
+  try { return JSON.parse(trimmed); } catch (e2) {
+    log('parseJsonContent', `step2 raw parse failed: ${e2.message}`);
+  }
 
   // 3. Try to find the outermost {...} block (handles prose wrapping the JSON)
   const start = trimmed.indexOf('{');
   const end = trimmed.lastIndexOf('}');
   if (start !== -1 && end > start) {
     try { return JSON.parse(trimmed.slice(start, end + 1)); } catch { /* fall through */ }
+    // 3b. Repair unescaped backslashes and literal newlines inside strings
+    try { return JSON.parse(repairJsonString(trimmed.slice(start, end + 1))); } catch (e3b) {
+      log('parseJsonContent', `step3b repair failed: ${e3b.message}`);
+    }
   }
 
   // 4. LaTeX escape fallback — the most common failure mode: the LLM embeds a LaTeX
@@ -1866,6 +1942,21 @@ function parseJsonContent(content) {
       complianceMatrix: [],
       evaluationReport: '# Evaluation Report\n\nModel returned raw LaTeX without JSON wrapper. Regenerate or check model output format.',
       questions: []
+    };
+  }
+
+  // 6. Best-effort salvage for malformed JSON where one field (commonly
+  //    evaluationReport) includes unescaped quotes and breaks full parsing.
+  const salvagedEval = extractMalformedField(trimmed, 'evaluationReport', ['complianceMatrix', 'questions']);
+  const salvagedMatrix = extractMalformedArray(trimmed, 'complianceMatrix');
+  const salvagedQuestions = extractMalformedArray(trimmed, 'questions');
+  if (salvagedEval || salvagedMatrix || salvagedQuestions) {
+    log('parseJsonContent', 'Recovered partial fields from malformed JSON response');
+    return {
+      proposalLatex: '',
+      complianceMatrix: Array.isArray(salvagedMatrix) ? salvagedMatrix : [],
+      evaluationReport: salvagedEval || '# Evaluation Report\n\nRecovered partial evaluation report from malformed model output.',
+      questions: Array.isArray(salvagedQuestions) ? salvagedQuestions : []
     };
   }
 
@@ -1982,6 +2073,112 @@ function extractNestedLatexString(value) {
     .replace(/\\n/g, '\n')
     .replace(/\\"/g, '"')
     .replace(/\\\\/g, '\\');
+}
+
+function extractMalformedField(value, field, nextKeys = []) {
+  const source = String(value || '');
+  const fieldPattern = new RegExp(`"${field}"\\s*:\\s*"`, 'i');
+  const startMatch = source.match(fieldPattern);
+  if (!startMatch || startMatch.index == null) return '';
+
+  const valueStart = startMatch.index + startMatch[0].length;
+  const nextKeyPattern = nextKeys.length
+    ? new RegExp(`"(?:${nextKeys.join('|')})"\\s*:`, 'i')
+    : null;
+
+  let valueEnd = source.length;
+  if (nextKeyPattern) {
+    const tail = source.slice(valueStart);
+    const nextMatch = tail.match(nextKeyPattern);
+    if (nextMatch && nextMatch.index != null) {
+      valueEnd = valueStart + nextMatch.index;
+      const commaIndex = source.lastIndexOf(',', valueEnd);
+      if (commaIndex >= valueStart) {
+        valueEnd = commaIndex;
+      }
+    }
+  }
+
+  const raw = source.slice(valueStart, valueEnd).trim();
+  if (!raw) return '';
+
+  // Unwrap a trailing quote if one exists and decode common JSON escapes.
+  const unwrapped = raw.endsWith('"') ? raw.slice(0, -1) : raw;
+  return unwrapped
+    .replace(/\\n/g, '\n')
+    .replace(/\\r/g, '\r')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\')
+    .trim();
+}
+
+function extractMalformedArray(value, key) {
+  const source = String(value || '');
+  const keyPattern = new RegExp(`"${key}"\\s*:\\s*\\[`, 'i');
+  const match = source.match(keyPattern);
+  if (!match || match.index == null) return null;
+
+  const arrayStart = source.indexOf('[', match.index);
+  if (arrayStart === -1) return null;
+
+  const arrayEnd = findBalancedArrayEnd(source, arrayStart);
+  if (arrayEnd === -1) return null;
+
+  const slice = source.slice(arrayStart, arrayEnd + 1);
+  try {
+    return JSON.parse(slice);
+  } catch {
+    try {
+      return JSON.parse(repairJsonString(slice));
+    } catch {
+      return null;
+    }
+  }
+}
+
+function findBalancedArrayEnd(source, startIndex) {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = startIndex; i < source.length; i += 1) {
+    const ch = source[i];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '[') {
+      depth += 1;
+      continue;
+    }
+
+    if (ch === ']') {
+      depth -= 1;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+
+  return -1;
 }
 
 function latexParagraph(value) {
