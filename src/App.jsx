@@ -579,29 +579,25 @@ function App() {
   }
 
   function adoptSuggestion(finding, index) {
-    const claim = finding.claim;
+    const target = finding.resolvedSentence;
     const replacement = finding.suggestedRewrite;
-    if (!claim || !replacement || !latexEditorValue) return;
-
-    let updated = latexEditorValue;
-    if (latexEditorValue.includes(claim)) {
-      updated = latexEditorValue.replace(claim, replacement);
-    } else {
-      // Try whitespace-normalised match
-      const escaped = claim.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
-      const match = latexEditorValue.match(new RegExp(escaped));
-      if (match) {
-        updated = latexEditorValue.replace(new RegExp(escaped), replacement);
-      } else {
-        setFindingError(index, "Couldn't find exact text — edit manually in the LaTeX editor.");
-        return;
-      }
+    if (!replacement || !latexEditorValue) return;
+    if (!target) {
+      setFindingError(index, 'Re-run Citation Review to locate this sentence.');
+      return;
     }
 
+    const idx = latexEditorValue.indexOf(target);
+    if (idx === -1) {
+      setFindingError(index, "Sentence no longer in editor — edit manually.");
+      return;
+    }
+
+    const updated = latexEditorValue.slice(0, idx) + replacement + latexEditorValue.slice(idx + target.length);
     setLatexEditorValue(updated);
     setResult((current) => ({ ...current, proposalLatex: updated }));
     setAdoptedFindings((current) => ({ ...current, [index]: 'rewrite' }));
-    setRunLog((current) => [...current, logEntry('Citations', `Rephrased: "${claim.slice(0, 60)}…"`)]);
+    setRunLog((current) => [...current, logEntry('Citations', `Rephrased: "${target.slice(0, 60)}…"`)]);
   }
 
   function insertCite(finding, index) {
@@ -609,25 +605,23 @@ function App() {
     const ev = (project.citationBank || []).find((e) => e.id === linkedId);
     if (!ev?.citationKey || !latexEditorValue) return;
 
+    const target = finding.resolvedSentence;
     const citeStr = `~\\cite{${ev.citationKey}}`;
-    const claim = finding.claim;
-    let updated = latexEditorValue;
-
-    if (latexEditorValue.includes(claim)) {
-      const pos = latexEditorValue.indexOf(claim) + claim.length;
-      updated = latexEditorValue.slice(0, pos) + citeStr + latexEditorValue.slice(pos);
-    } else {
-      const escaped = claim.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
-      const match = latexEditorValue.match(new RegExp(escaped));
-      if (match) {
-        const pos = latexEditorValue.indexOf(match[0]) + match[0].length;
-        updated = latexEditorValue.slice(0, pos) + citeStr + latexEditorValue.slice(pos);
-      } else {
-        setFindingError(index, `Couldn't find claim — add \\cite{${ev.citationKey}} manually.`);
-        return;
-      }
+    if (!target) {
+      setFindingError(index, 'Re-run Citation Review to locate this sentence.');
+      return;
     }
 
+    const idx = latexEditorValue.indexOf(target);
+    if (idx === -1) {
+      setFindingError(index, `Sentence no longer in editor — add \\cite{${ev.citationKey}} manually.`);
+      return;
+    }
+
+    // Insert before trailing sentence punctuation so result is: ...claim~\cite{key}.
+    const trailingPunct = target.search(/[.!?]\s*$/);
+    const insertAt = idx + (trailingPunct !== -1 ? trailingPunct : target.length);
+    const updated = latexEditorValue.slice(0, insertAt) + citeStr + latexEditorValue.slice(insertAt);
     setLatexEditorValue(updated);
     setResult((current) => ({ ...current, proposalLatex: updated }));
     setAdoptedFindings((current) => ({ ...current, [index]: 'cite' }));
@@ -654,7 +648,12 @@ function App() {
         proposalLatex: result.proposalLatex,
         citationBank: project.citationBank || []
       }, controller.signal);
-      setCitationReview(data);
+      const resolvedFindings = (data.findings || []).map(f => {
+        const range = findClaimRange(f.claim, latexEditorValue);
+        const resolvedSentence = range ? expandToSentence(latexEditorValue, range.start, range.end) : null;
+        return { ...f, resolvedSentence };
+      });
+      setCitationReview({ ...data, findings: resolvedFindings });
       setFindingLinks({});
       setAdoptedFindings({});
       setFindingErrors({});
@@ -2017,6 +2016,11 @@ function App() {
                                     )}
                                   </div>
                                   <blockquote className="finding-claim">"{finding.claim}"</blockquote>
+                                  {finding.resolvedSentence && finding.resolvedSentence !== finding.claim && (
+                                    <p className="finding-resolved-sentence">
+                                      <span className="finding-resolved-label">Targets in editor:</span> {finding.resolvedSentence}
+                                    </p>
+                                  )}
                                   <p className="finding-explanation">{finding.explanation}</p>
                                   {finding.suggestedRewrite && (
                                     <div className="finding-rewrite">
@@ -2536,6 +2540,62 @@ function findRelevantEvidence(claim, citationBank) {
     .sort((a, b) => b.score - a.score)
     .slice(0, 3)
     .map(({ entry }) => entry);
+}
+
+// Locate a claim string inside LaTeX source. Returns { start, end, method } or null.
+// Tries three strategies: exact substring → whitespace-normalised regex → key-word window.
+// The key-word window handles cases where the LLM stripped LaTeX commands (\textbf{}, etc.)
+// or slightly paraphrased the claim text.
+function findClaimRange(claim, latex) {
+  // 1. Exact substring
+  const exactIdx = latex.indexOf(claim);
+  if (exactIdx !== -1) return { start: exactIdx, end: exactIdx + claim.length, method: 'exact' };
+
+  // 2. Whitespace / newline-normalised regex
+  const wsEsc = claim.trim()
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\s+/g, '\\s+');
+  const wsMatch = new RegExp(wsEsc).exec(latex);
+  if (wsMatch) return { start: wsMatch.index, end: wsMatch.index + wsMatch[0].length, method: 'whitespace' };
+
+  // 3. Key-word window: find 3+ distinctive words from the claim in sequence
+  const trivial = /^(their|there|these|those|about|which|where|when|would|could|should|might|being|having|doing|after|before|while|since|other|within|between|through|against|during|every|under|above|below|around|another|because|however|although|without|whether|therefore|performance|proposed|present|approach|method|system|model|based|using|results|paper|work|study|shows|shown)$/;
+  const words = (claim.toLowerCase().match(/\b[a-zA-Z]{5,}\b/g) || []).filter(w => !trivial.test(w));
+  for (let n = Math.min(words.length, 5); n >= 3; n--) {
+    const pat = words.slice(0, n)
+      .map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('[\\s\\S]{1,80}');
+    const km = new RegExp(pat, 'i').exec(latex);
+    if (km) return { start: km.index, end: km.index + km[0].length, method: 'fuzzy' };
+  }
+
+  return null;
+}
+
+// Expand a matched range outward to the nearest sentence boundaries.
+// Returns the full sentence substring from latex (exact, ready for indexOf).
+function expandToSentence(latex, start, end) {
+  let sentStart = 0;
+  for (let i = start - 1; i >= Math.max(0, start - 600); i--) {
+    if (i === 0) { sentStart = 0; break; }
+    if ((latex[i] === '.' || latex[i] === '!' || latex[i] === '?') && /[ \t\n]/.test(latex[i + 1] || ' ')) {
+      sentStart = i + 1;
+      while (sentStart < start && /[ \t\n]/.test(latex[sentStart])) sentStart++;
+      break;
+    }
+    if (latex[i] === '\n' && i > 0 && latex[i - 1] === '\n') { sentStart = i + 1; break; }
+  }
+
+  let sentEnd = end;
+  for (let i = end; i < Math.min(latex.length, end + 600); i++) {
+    if ((latex[i] === '.' || latex[i] === '!' || latex[i] === '?') && /[ \t\n]/.test(latex[i + 1] || ' ')) {
+      sentEnd = i + 1;
+      break;
+    }
+    if (latex[i] === '\n' && i + 1 < latex.length && latex[i + 1] === '\n') { sentEnd = i; break; }
+  }
+
+  return latex.slice(sentStart, sentEnd);
 }
 
 function isAbortError(error) {
