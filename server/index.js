@@ -6,7 +6,9 @@ import { proposalLatexToPdf } from './pdfExport.js';
 import {
   answerAgentQuestion,
   critiqueProposal,
+  generateEvalReport,
   generateProposal,
+  patchProposal,
   reviseProposalFromCritique,
   startAgentSession
 } from './proposalGenerator.js';
@@ -116,6 +118,42 @@ app.post('/api/research-gaps', async (request, response) => {
   } catch (error) {
     response.status(500).json({
       error: 'Research gap detection failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post('/api/eval-report', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    if (!String(payload.project?.topic || payload.project?.title || payload.topic || '').trim()) {
+      response.status(400).json({ error: 'Project topic is required.' });
+      return;
+    }
+    response.json(await generateEvalReport(payload));
+  } catch (error) {
+    response.status(500).json({
+      error: 'Evaluation report generation failed.',
+      detail: error instanceof Error ? error.message : String(error)
+    });
+  }
+});
+
+app.post('/api/review/patch', async (request, response) => {
+  try {
+    const payload = request.body || {};
+    if (!String(payload.proposalLatex || '').trim()) {
+      response.status(400).json({ error: 'proposalLatex is required.' });
+      return;
+    }
+    if (!Array.isArray(payload.selectedCritiques) || (!payload.selectedCritiques.length && !String(payload.userInstruction || '').trim())) {
+      response.status(400).json({ error: 'selectedCritiques or userInstruction is required.' });
+      return;
+    }
+    response.json(await patchProposal(payload));
+  } catch (error) {
+    response.status(500).json({
+      error: 'Proposal patch failed.',
       detail: error instanceof Error ? error.message : String(error)
     });
   }

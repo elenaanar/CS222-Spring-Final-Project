@@ -52,6 +52,8 @@ Return strict JSON with this shape:
 }
 
 Rules:
+- CRITICAL: The proposal must be about the user's stated research topic from roughInputs. It must NOT describe or reference the proposal-generation software, workflow app, or any tool used to create it.
+- Do not include phrases like "proposal agent", "proposal generator", "workflow app", "classroom demo", "compliance matrix", or "API-backed generator" anywhere in the proposal body.
 - The proposal must read like a real academic research proposal with specific claims, not a template skeleton.
 - The proposal artifact must be LaTeX, not Markdown.
 - Return a complete LaTeX document with \\documentclass[11pt]{article}, 1-inch margins, title, sections, and bibliography/source notes.
@@ -59,7 +61,10 @@ Rules:
 - Do not use \\includegraphics or reference external image files. Build figures directly in LaTeX with text boxes, minipages, tabular layouts, lists, or simple arrows.
 - Keep the proposed research plan credible, appropriately scoped, and supported by milestones, resources, risks, and evaluation criteria.
 - Mark unsupported claims as assumptions rather than inventing citations.
-- Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.`;
+- Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.
+- If literatureContext.selectedPapers are provided, reference only those papers for claims they actually support. Do not invent citation details or author names.
+- If literatureContext.continuationIdeas are provided, use them to frame the motivation and gap sections. Use cautious language: "this work builds on limitations noted in prior work" rather than "no prior work exists" or "this is the first."
+- Avoid absolute novelty claims. Use language like "this proposal addresses a direction suggested by prior work" or "we explore an extension identified in the literature."`;
 
 const QUESTION_SYSTEM_PROMPT = `You are running an interactive proposal-agent workflow.
 
@@ -159,6 +164,315 @@ Rules:
 - Preserve existing useful content; edit surgically.
 - Return only JSON.`;
 
+const FIELD_TO_SECTION_HINTS = {
+  abstract: ['abstract'],
+  problem:  ['Motivation', 'Gap', 'Problem', 'Introduction'],
+  topic:    ['Motivation', 'Gap', 'Project Goal', 'Introduction'],
+  method:   ['Method', 'Methodology', 'Approach', 'Proposed'],
+  evaluation: ['Evaluation', 'Expected Results', 'Baselines', 'Milestones'],
+  timeline: ['Timeline', 'Milestones', 'Expected Results', 'Schedule'],
+  resources: ['Resources', 'Feasibility', 'Budget'],
+  references: ['References', 'Related Work', 'Background'],
+  risks:    ['Risks', 'Limitations', 'Assumptions', 'Mitigation'],
+  title:    ['Motivation', 'Project Goal']
+};
+
+const BANNED_REVIEW_LANGUAGE = [
+  'scope is too broad', 'claims are unsupported', 'missing evidence',
+  'insufficient detail', 'not well-motivated', 'poorly defined',
+  'lacks novelty', 'needs more work', 'is too vague'
+];
+
+const SECTION_EDIT_SYSTEM_PROMPT = `You are editing one section of an academic research proposal. Rewrite ONLY the provided section to address the selected reviewer critiques and user instruction.
+
+Return strict JSON:
+{ "sectionLatex": "rewritten section LaTeX here" }
+
+Rules:
+- sectionLatex must start with \\\\section{...} (or \\\\begin{abstract} for the abstract) exactly as in the original — do NOT rename the section.
+- Do NOT include \\\\documentclass, \\\\begin{document}, \\\\end{document}, or any preamble.
+- Do NOT rewrite sections not provided.
+- Do NOT invent citations — only use papers already in the project references or literatureContext.
+- Risks/Limitations: phrase as considered limitations with mitigation plans, not harsh self-critique.
+- Do NOT include reviewer critique language (e.g. "scope is too broad", "claims are unsupported") directly in the proposal prose.
+- Evaluation: add concrete baselines and measurable criteria only where realistic.
+- Novelty/Problem: frame contributions cautiously; do not claim universal novelty.
+- Keep proposal tone academic and confident.
+- Return only JSON.`;
+
+// ─── Section extraction / replacement helpers ────────────────────────────────
+
+function extractLatexSections(latex) {
+  const text = String(latex || '');
+  const sections = [];
+
+  // Abstract (environment-based)
+  const abstractMatch = /\\begin\{abstract\}[\s\S]*?\\end\{abstract\}/i.exec(text);
+  if (abstractMatch) {
+    sections.push({
+      name: 'abstract',
+      startIndex: abstractMatch.index,
+      endIndex: abstractMatch.index + abstractMatch[0].length,
+      content: abstractMatch[0]
+    });
+  }
+
+  // Named \section{...} blocks
+  const sectionPattern = /\\section\{([^}]+)\}/g;
+  const found = [];
+  let m;
+  while ((m = sectionPattern.exec(text)) !== null) {
+    found.push({ name: m[1], index: m.index });
+  }
+
+  const docEndIdx = text.lastIndexOf('\\end{document}');
+  const docEnd = docEndIdx !== -1 ? docEndIdx : text.length;
+
+  for (let i = 0; i < found.length; i++) {
+    const start = found[i].index;
+    const end = i + 1 < found.length ? found[i + 1].index : docEnd;
+    sections.push({
+      name: found[i].name,
+      startIndex: start,
+      endIndex: end,
+      content: text.slice(start, end).trimEnd()
+    });
+  }
+
+  return sections;
+}
+
+function findSectionsForField(sections, targetField) {
+  const hints = FIELD_TO_SECTION_HINTS[String(targetField).toLowerCase()] || [];
+  if (!hints.length) return [];
+  return sections.filter((s) =>
+    hints.some((hint) => s.name.toLowerCase().includes(hint.toLowerCase()))
+  );
+}
+
+function replaceLatexSection(latex, section, newContent) {
+  return latex.slice(0, section.startIndex) + newContent + latex.slice(section.endIndex);
+}
+
+function validatePatchedSection(sectionName, rawContent) {
+  let content = stripCodeFence(clean(rawContent));
+  if (!content) return null;
+
+  // Reject if model returned a full LaTeX document
+  if (content.includes('\\documentclass') || content.includes('\\begin{document}')) {
+    log('validatePatch', `full doc returned for "${sectionName}" — rejecting`);
+    return null;
+  }
+
+  // Reject banned review language leaking into proposal prose
+  const reviewLang = BANNED_REVIEW_LANGUAGE.find((phrase) =>
+    content.toLowerCase().includes(phrase)
+  );
+  if (reviewLang) {
+    log('validatePatch', `reviewer language "${reviewLang}" found in "${sectionName}" — rejecting`);
+    return null;
+  }
+
+  // Reject banned app-topic phrases
+  const banned = BANNED_PHRASES.find((phrase) => content.toLowerCase().includes(phrase));
+  if (banned) {
+    log('validatePatch', `banned phrase "${banned}" in "${sectionName}" — rejecting`);
+    return null;
+  }
+
+  // Restore section heading if the model dropped it
+  const isAbstract = sectionName.toLowerCase() === 'abstract';
+  if (isAbstract) {
+    if (!content.includes('\\begin{abstract}')) {
+      content = `\\begin{abstract}\n${content}\n\\end{abstract}`;
+    }
+  } else if (!content.includes(`\\section{${sectionName}}`)) {
+    content = `\\section{${sectionName}}\n${content}`;
+  }
+
+  return content.trim();
+}
+
+async function patchSectionWithApi({ sectionName, sectionContent, critiques, userInstruction, project, model }) {
+  const promptPayload = {
+    task: 'section-patch',
+    sectionName,
+    sectionContent,
+    projectContext: {
+      title: project.title,
+      topic: project.topic,
+      problem: project.problem,
+      method: project.method,
+      evaluation: project.evaluation,
+      references: truncateForModel(project.references, 1000)
+    },
+    selectedCritiques: critiques.map((c) => ({
+      issue: c.question || c.title,
+      analysis: c.analysis,
+      suggestedFix: c.suggestedFix,
+      severity: c.severity
+    })),
+    userInstruction: userInstruction || undefined
+  };
+
+  const content = await callModel({
+    systemPrompt: SECTION_EDIT_SYSTEM_PROMPT,
+    payload: promptPayload,
+    model,
+    temperature: 0.1
+  });
+
+  const parsed = parseJsonContent(content);
+  const raw = clean(parsed.sectionLatex || parsed.latex || parsed.content || '');
+  return validatePatchedSection(sectionName, raw);
+}
+
+async function patchWithApi({ project, proposalLatex, sections, byField, userInstruction }) {
+  const model = clean(process.env.LLM_MODEL) || 'gpt-4o-mini';
+  const warnings = [];
+
+  // Build map: sectionName → { section, critiques, fields }
+  const sectionPatchMap = new Map();
+
+  for (const [field, critiques] of Object.entries(byField)) {
+    const matched = findSectionsForField(sections, field);
+    if (!matched.length) {
+      warnings.push(`No LaTeX section matched field "${field}" — skipped.`);
+      continue;
+    }
+    for (const section of matched) {
+      if (!sectionPatchMap.has(section.name)) {
+        sectionPatchMap.set(section.name, { section, critiques: [], fields: [] });
+      }
+      const entry = sectionPatchMap.get(section.name);
+      entry.critiques.push(...critiques);
+      if (!entry.fields.includes(field)) entry.fields.push(field);
+    }
+  }
+
+  // If only a userInstruction (no critiques), apply to the method/approach section
+  if (userInstruction && sectionPatchMap.size === 0) {
+    const fallback = findSectionsForField(sections, 'method');
+    if (fallback.length) {
+      const s = fallback[0];
+      sectionPatchMap.set(s.name, { section: s, critiques: [], fields: ['method'] });
+    }
+  }
+
+  if (sectionPatchMap.size === 0) {
+    return {
+      mode: 'api',
+      provider: process.env.LLM_API_URL,
+      proposalLatex,
+      patchedSections: [],
+      warnings: [...warnings, 'No matching sections found. Check that the proposal has the expected section headings.'],
+      summary: 'No sections were patched.'
+    };
+  }
+
+  // Make one LLM call per unique section, collect results
+  const patchResults = [];
+  for (const [sectionName, { section, critiques, fields }] of sectionPatchMap) {
+    log('patchWithApi', `patching "${sectionName}" (fields: ${fields.join(', ')}, critiques: ${critiques.length})`);
+    try {
+      const patchedContent = await patchSectionWithApi({
+        sectionName,
+        sectionContent: section.content,
+        critiques,
+        userInstruction,
+        project,
+        model
+      });
+      if (patchedContent) {
+        patchResults.push({ section, patchedContent, sectionName, fields, critiques });
+      } else {
+        warnings.push(`Patch for "${sectionName}" was rejected by guardrails — section unchanged.`);
+      }
+    } catch (err) {
+      warnings.push(`Patch for "${sectionName}" failed: ${err.message}`);
+    }
+  }
+
+  // Apply patches bottom-to-top so earlier position indices stay valid
+  patchResults.sort((a, b) => b.section.startIndex - a.section.startIndex);
+
+  let updatedLatex = proposalLatex;
+  const patchedSections = [];
+
+  for (const { section, patchedContent, sectionName, fields, critiques } of patchResults) {
+    updatedLatex = replaceLatexSection(updatedLatex, section, patchedContent);
+    patchedSections.push({
+      sectionName,
+      targetField: fields.join(', '),
+      before: section.content.slice(0, 300),
+      after: patchedContent.slice(0, 300),
+      appliedCritiques: critiques.map((c) => c.question || c.title).filter(Boolean)
+    });
+  }
+
+  const summary = patchedSections.length
+    ? `Patched ${patchedSections.length} section(s): ${patchedSections.map((s) => s.sectionName).join(', ')}.`
+    : `No sections were patched. ${warnings.join(' ')}`;
+
+  return {
+    mode: 'api',
+    provider: process.env.LLM_API_URL,
+    proposalLatex: updatedLatex,
+    patchedSections,
+    warnings,
+    summary
+  };
+}
+
+function patchLocally({ proposalLatex }) {
+  return {
+    mode: 'local-fallback',
+    provider: 'template',
+    proposalLatex,
+    patchedSections: [],
+    warnings: ['Targeted section editing requires an LLM API key. Use the LaTeX editor to make manual changes.'],
+    summary: 'No patches applied — LLM not available.'
+  };
+}
+
+export async function patchProposal(payload) {
+  const project = normalizePayload(payload.project || payload);
+  const proposalLatex = clean(payload.proposalLatex) || '';
+  const selectedCritiques = Array.isArray(payload.selectedCritiques) ? payload.selectedCritiques : [];
+  const userInstruction = clean(payload.userInstruction) || '';
+
+  log('patchProposal', `title="${project.title}" | critiques=${selectedCritiques.length} | instruction=${Boolean(userInstruction)}`);
+
+  if (!proposalLatex) throw new Error('proposalLatex is required for patching.');
+
+  // Group critiques by targetField
+  const byField = {};
+  for (const critique of selectedCritiques) {
+    const field = normalizeRevisionField(critique.targetField) || 'method';
+    if (!byField[field]) byField[field] = [];
+    byField[field].push(critique);
+  }
+
+  // userInstruction with no critiques → still patch
+  if (!selectedCritiques.length && userInstruction) {
+    byField.method = byField.method || [];
+  }
+
+  const sections = extractLatexSections(proposalLatex);
+  log('patchProposal', `extracted ${sections.length} sections: ${sections.map((s) => s.name).join(', ')}`);
+
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
+    try {
+      return await patchWithApi({ project, proposalLatex, sections, byField, userInstruction });
+    } catch (error) {
+      log('patchProposal', `API patch failed: ${error.message} — falling back`);
+      return patchLocally({ proposalLatex });
+    }
+  }
+
+  return patchLocally({ proposalLatex });
+}
+
 export async function startAgentSession(payload) {
   const project = normalizePayload(payload);
   const checklist = extractChecklist(project.requirements || DEFAULT_REQUIREMENTS);
@@ -242,6 +556,68 @@ export async function generateProposal(payload) {
 
   log('generateProposal', 'no API key — using deterministic fallback');
   return generateLocally(project, checklist);
+}
+
+const EVAL_REPORT_SYSTEM_PROMPT = `You are a research proposal quality reviewer. You will receive an existing LaTeX proposal and the project inputs used to generate it. Your job is to assess the proposal quality and return ONLY the evaluation fields — do NOT rewrite or reproduce the LaTeX.
+
+Return strict JSON with this exact shape:
+{
+  "evaluationReport": "Markdown report: summary, weak claims, gaps, timeline risks, revision priorities",
+  "complianceMatrix": [
+    { "requirement": "requirement text", "status": "Covered | Needs work", "evidence": "brief evidence from the proposal", "fix": "brief next action" }
+  ],
+  "questions": ["short clarifying question"]
+}
+
+Rules:
+- evaluationReport must be Markdown (headers, bullets). Include: Summary, Weak Claims, Missing Sections, Revision Priorities.
+- complianceMatrix must cover every item in the provided checklist.
+- questions should be 0–5 remaining clarifying questions about the project.
+- Do NOT return proposalLatex. Do NOT reproduce any LaTeX.`;
+
+export async function generateEvalReport(payload) {
+  const project = normalizePayload(payload.project || payload);
+  const proposalLatex = clean(payload.proposalLatex) || '';
+  const checklist = extractChecklist(project.requirements || DEFAULT_REQUIREMENTS);
+  log('generateEvalReport', `title="${project.title}" | latex=${proposalLatex.length} chars | api=${Boolean(process.env.LLM_API_KEY && process.env.LLM_API_URL)}`);
+
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
+    try {
+      const model = clean(process.env.LLM_MODEL) || 'gpt-4o-mini';
+      const promptPayload = {
+        task: 'eval-report',
+        project: {
+          title: project.title,
+          topic: project.topic,
+          problem: project.problem,
+          method: project.method,
+          timeline: project.timeline,
+          evaluation: project.evaluation
+        },
+        proposalLatex: truncateForModel(proposalLatex, 8000),
+        checklist
+      };
+      const content = await callModel({ systemPrompt: EVAL_REPORT_SYSTEM_PROMPT, payload: promptPayload, model, temperature: 0.1 });
+      const parsed = parseJsonContent(content);
+      const evalReport = clean(parsed.evaluationReport) || '# Evaluation Report\n\nNo report returned.';
+      const matrix = Array.isArray(parsed.complianceMatrix) && parsed.complianceMatrix.length
+        ? parsed.complianceMatrix.map((row) => ({
+          requirement: clean(row.requirement),
+          status: clean(row.status) || 'Needs work',
+          evidence: clean(row.evidence),
+          fix: clean(row.fix)
+        }))
+        : [];
+      const questions = Array.isArray(parsed.questions) ? parsed.questions.map(clean).filter(Boolean).slice(0, 5) : [];
+      return { mode: 'api', provider: process.env.LLM_API_URL, evaluationReport: evalReport, complianceMatrix: matrix, questions };
+    } catch (error) {
+      log('generateEvalReport', `LLM failed, using local fallback: ${error.message}`);
+    }
+  }
+
+  // Local fallback — deterministic assessment
+  const localResult = generateLocally(project, checklist);
+  return { mode: 'local-fallback', provider: 'template', evaluationReport: localResult.evaluationReport, complianceMatrix: localResult.complianceMatrix, questions: localResult.questions };
 }
 
 export async function critiqueProposal(payload) {
@@ -365,7 +741,7 @@ async function reviseWithApi({ project, selectedCritiques, userInstruction }) {
   return {
     mode: 'api',
     provider: process.env.LLM_API_URL,
-    project: revisedProject,
+    project: { ...revisedProject, literatureContext: project.literatureContext },
     appliedChanges: appliedChanges.length ? appliedChanges : ['Applied selected reviewer critiques.'],
     runMessage: 'Applied selected critique fixes to project state.',
     transcript: {
@@ -396,7 +772,7 @@ function reviseLocally({ project, selectedCritiques, userInstruction }) {
   return {
     mode: 'local-fallback',
     provider: 'template',
-    project: nextProject,
+    project: { ...nextProject, literatureContext: project.literatureContext },
     appliedChanges: appliedChanges.length ? appliedChanges : ['No critique selected. Project state unchanged.'],
     runMessage: 'Applied local revision pass from selected critique items.'
   };
@@ -645,6 +1021,11 @@ async function refineProjectWithApi(payload) {
   };
 }
 
+const BANNED_PHRASES = [
+  'proposal agent', 'proposal generator', 'workflow app', 'classroom demo',
+  'this app', 'api-backed generator', 'the app', 'our app'
+];
+
 async function generateWithApi(project, checklist) {
   const model = clean(process.env.LLM_MODEL);
 
@@ -652,10 +1033,39 @@ async function generateWithApi(project, checklist) {
     throw new Error('LLM_MODEL is required when LLM_API_KEY and LLM_API_URL are configured.');
   }
 
+  const litCtx = project.literatureContext || { selectedPapers: [], continuationIdeas: [], evidenceNotes: [] };
+
   const promptPayload = {
-    roughInputs: project,
+    roughInputs: {
+      title: project.title,
+      topic: project.topic,
+      problem: project.problem,
+      method: project.method,
+      timeline: project.timeline,
+      evaluation: project.evaluation,
+      resources: project.resources,
+      references: project.references
+    },
+    literatureContext: {
+      selectedPapers: (litCtx.selectedPapers || []).slice(0, 10).map((p) => ({
+        title: p.title,
+        authors: p.authors,
+        year: p.year,
+        venue: p.venue,
+        url: p.url,
+        summary: p.summary || p.abstract
+      })),
+      continuationIdeas: (litCtx.continuationIdeas || []).slice(0, 5).map((idea) => ({
+        title: idea.title,
+        description: idea.description,
+        possibleResearchQuestion: idea.possibleResearchQuestion || idea.researchQuestion,
+        possibleMethod: idea.possibleMethod || '',
+        basedOnPapers: idea.basedOnPapers || idea.supportingPaperKeys || []
+      })),
+      evidenceNotes: (litCtx.evidenceNotes || []).slice(0, 5)
+    },
     checklist,
-    instructions: 'The roughInputs fields are direction-setting notes. Expand them into a complete, specific, academically detailed research proposal. Use your knowledge of the topic to add concrete methods, datasets, metrics, and prior work context. Do not copy the field values verbatim.',
+    instructions: 'The roughInputs fields are direction-setting notes. Expand them into a complete, specific, academically detailed research proposal about the stated research topic. Use your knowledge of the topic to add concrete methods, datasets, metrics, and prior work context. Do not copy the field values verbatim. The proposal must be about the research topic, not about any software tool.',
     outputContract: {
       proposalLatex: 'Complete compile-ready LaTeX source for proposal.tex — specific claims, real methods, concrete evaluation',
       complianceMatrix: 'Array of requirement coverage rows',
@@ -671,15 +1081,37 @@ async function generateWithApi(project, checklist) {
     temperature: 0.2
   });
   const parsed = parseJsonContent(content);
+  const result = coerceResult(parsed, project, checklist);
+
+  const latexLower = result.proposalLatex.toLowerCase();
+  const foundBanned = BANNED_PHRASES.find((phrase) => latexLower.includes(phrase));
+
+  if (foundBanned) {
+    log('generateWithApi', `Banned phrase "${foundBanned}" detected — regenerating with corrective prompt`);
+    const correctivePayload = {
+      ...promptPayload,
+      correctiveInstruction: `The previous draft incorrectly described a software tool instead of the research topic. Rewrite the entire proposal so it is ONLY about the research topic "${project.title || project.topic}". Do not mention any proposal software, agent app, or generation workflow anywhere.`
+    };
+    const correctedContent = await callModel({
+      systemPrompt: SYSTEM_PROMPT,
+      payload: correctivePayload,
+      model,
+      temperature: 0.1
+    });
+    const correctedParsed = parseJsonContent(correctedContent);
+    return {
+      mode: 'api',
+      provider: process.env.LLM_API_URL,
+      ...coerceResult(correctedParsed, project, checklist),
+      transcript: { prompt: correctivePayload, rawResponse: correctedContent }
+    };
+  }
 
   return {
     mode: 'api',
     provider: process.env.LLM_API_URL,
-    ...coerceResult(parsed, project, checklist),
-    transcript: {
-      prompt: promptPayload,
-      rawResponse: content
-    }
+    ...result,
+    transcript: { prompt: promptPayload, rawResponse: content }
   };
 }
 
@@ -757,6 +1189,7 @@ async function callOpenAiCompatible({ systemPrompt, payload, model, temperature 
         model: modelId,
         temperature,
         max_tokens: 4096,
+        response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: JSON.stringify(payload, null, 2) }
@@ -1291,7 +1724,18 @@ function normalizePayload(payload) {
     evaluation: clean(payload.evaluation),
     resources: clean(payload.resources),
     references: clean(payload.references),
-    requirements: clean(payload.requirements) || DEFAULT_REQUIREMENTS
+    requirements: clean(payload.requirements) || DEFAULT_REQUIREMENTS,
+    literatureContext: normalizeLiteratureContext(payload.literatureContext)
+  };
+}
+
+function normalizeLiteratureContext(ctx) {
+  if (!ctx) return { selectedPapers: [], evidenceNotes: [], continuationIdeas: [], citationCandidates: [] };
+  return {
+    selectedPapers: Array.isArray(ctx.selectedPapers) ? ctx.selectedPapers : [],
+    evidenceNotes: Array.isArray(ctx.evidenceNotes) ? ctx.evidenceNotes : [],
+    continuationIdeas: Array.isArray(ctx.continuationIdeas) ? ctx.continuationIdeas : [],
+    citationCandidates: Array.isArray(ctx.citationCandidates) ? ctx.citationCandidates : []
   };
 }
 
@@ -1361,9 +1805,42 @@ function parseJsonContent(content) {
     try { return JSON.parse(trimmed.slice(start, end + 1)); } catch { /* fall through */ }
   }
 
-  // 4. If it looks like raw LaTeX, salvage it
+  // 4. LaTeX escape fallback — the most common failure mode: the LLM embeds a LaTeX
+  //    document inside JSON but doesn't escape backslashes/quotes, making JSON.parse fail.
+  //    Extract the LaTeX document directly via regex, then try to parse the rest.
+  const latexMatch = trimmed.match(/\\documentclass[\s\S]*?\\end\{document\}/i);
+  if (latexMatch) {
+    const extractedLatex = latexMatch[0];
+    // Strip the LaTeX out and try to parse the remaining JSON fields
+    const withoutLatex = trimmed.replace(latexMatch[0], '""');
+    let extras = {};
+    try {
+      const partial = JSON.parse(withoutLatex.slice(withoutLatex.indexOf('{')));
+      extras = partial;
+    } catch { /* best effort */ }
+    log('parseJsonContent', `JSON parse failed but recovered LaTeX (${extractedLatex.length} chars) via regex`);
+    return {
+      proposalLatex: extractedLatex,
+      complianceMatrix: extras.complianceMatrix || [],
+      evaluationReport: extras.evaluationReport || '# Evaluation Report\n\nRecovered LaTeX from malformed response. Compliance details unavailable.',
+      questions: extras.questions || []
+    };
+  }
+
+  // 5. If it looks like raw LaTeX with no JSON at all, salvage the LaTeX
+  if (looksLikeLatex(trimmed)) {
+    log('parseJsonContent', 'Response is raw LaTeX without JSON wrapper — salvaging');
+    return {
+      proposalLatex: trimmed,
+      complianceMatrix: [],
+      evaluationReport: '# Evaluation Report\n\nModel returned raw LaTeX without JSON wrapper. Regenerate or check model output format.',
+      questions: []
+    };
+  }
+
+  log('parseJsonContent', `Parse failed entirely. Raw response (first 500 chars): ${trimmed.slice(0, 500)}`);
   return {
-    proposalLatex: looksLikeLatex(trimmed) ? trimmed : '',
+    proposalLatex: '',
     complianceMatrix: [],
     evaluationReport: '# Evaluation Report\n\nThe model response could not be parsed. Try regenerating.',
     questions: []
