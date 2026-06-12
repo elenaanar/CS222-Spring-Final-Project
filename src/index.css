@@ -1389,6 +1389,56 @@ pre {
   font-size: 0.84rem;
 }
 
+.patch-summary {
+  border: 1px solid #b8d8c8;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #eef8f4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.patch-summary-title {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: #1e5240;
+}
+
+.patch-section-list,
+.patch-warning-list {
+  margin: 0;
+  padding-left: 1.2rem;
+  font-size: 0.82rem;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.patch-section-list {
+  color: #26363b;
+}
+
+.patch-warning-list {
+  color: #7a4a1a;
+}
+
+.full-regen-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-top: 4px;
+  border-top: 1px solid #e3eaed;
+  flex-wrap: wrap;
+}
+
+.full-regen-warning {
+  font-size: 0.78rem;
+  color: #7a4a1a;
+  font-weight: 600;
+}
+
 .review-critique-list {
   display: flex;
   flex-direction: column;

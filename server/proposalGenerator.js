@@ -164,6 +164,315 @@ Rules:
 - Preserve existing useful content; edit surgically.
 - Return only JSON.`;
 
+const FIELD_TO_SECTION_HINTS = {
+  abstract: ['abstract'],
+  problem:  ['Motivation', 'Gap', 'Problem', 'Introduction'],
+  topic:    ['Motivation', 'Gap', 'Project Goal', 'Introduction'],
+  method:   ['Method', 'Methodology', 'Approach', 'Proposed'],
+  evaluation: ['Evaluation', 'Expected Results', 'Baselines', 'Milestones'],
+  timeline: ['Timeline', 'Milestones', 'Expected Results', 'Schedule'],
+  resources: ['Resources', 'Feasibility', 'Budget'],
+  references: ['References', 'Related Work', 'Background'],
+  risks:    ['Risks', 'Limitations', 'Assumptions', 'Mitigation'],
+  title:    ['Motivation', 'Project Goal']
+};
+
+const BANNED_REVIEW_LANGUAGE = [
+  'scope is too broad', 'claims are unsupported', 'missing evidence',
+  'insufficient detail', 'not well-motivated', 'poorly defined',
+  'lacks novelty', 'needs more work', 'is too vague'
+];
+
+const SECTION_EDIT_SYSTEM_PROMPT = `You are editing one section of an academic research proposal. Rewrite ONLY the provided section to address the selected reviewer critiques and user instruction.
+
+Return strict JSON:
+{ "sectionLatex": "rewritten section LaTeX here" }
+
+Rules:
+- sectionLatex must start with \\\\section{...} (or \\\\begin{abstract} for the abstract) exactly as in the original — do NOT rename the section.
+- Do NOT include \\\\documentclass, \\\\begin{document}, \\\\end{document}, or any preamble.
+- Do NOT rewrite sections not provided.
+- Do NOT invent citations — only use papers already in the project references or literatureContext.
+- Risks/Limitations: phrase as considered limitations with mitigation plans, not harsh self-critique.
+- Do NOT include reviewer critique language (e.g. "scope is too broad", "claims are unsupported") directly in the proposal prose.
+- Evaluation: add concrete baselines and measurable criteria only where realistic.
+- Novelty/Problem: frame contributions cautiously; do not claim universal novelty.
+- Keep proposal tone academic and confident.
+- Return only JSON.`;
+
+// ─── Section extraction / replacement helpers ────────────────────────────────
+
+function extractLatexSections(latex) {
+  const text = String(latex || '');
+  const sections = [];
+
+  // Abstract (environment-based)
+  const abstractMatch = /\\begin\{abstract\}[\s\S]*?\\end\{abstract\}/i.exec(text);
+  if (abstractMatch) {
+    sections.push({
+      name: 'abstract',
+      startIndex: abstractMatch.index,
+      endIndex: abstractMatch.index + abstractMatch[0].length,
+      content: abstractMatch[0]
+    });
+  }
+
+  // Named \section{...} blocks
+  const sectionPattern = /\\section\{([^}]+)\}/g;
+  const found = [];
+  let m;
+  while ((m = sectionPattern.exec(text)) !== null) {
+    found.push({ name: m[1], index: m.index });
+  }
+
+  const docEndIdx = text.lastIndexOf('\\end{document}');
+  const docEnd = docEndIdx !== -1 ? docEndIdx : text.length;
+
+  for (let i = 0; i < found.length; i++) {
+    const start = found[i].index;
+    const end = i + 1 < found.length ? found[i + 1].index : docEnd;
+    sections.push({
+      name: found[i].name,
+      startIndex: start,
+      endIndex: end,
+      content: text.slice(start, end).trimEnd()
+    });
+  }
+
+  return sections;
+}
+
+function findSectionsForField(sections, targetField) {
+  const hints = FIELD_TO_SECTION_HINTS[String(targetField).toLowerCase()] || [];
+  if (!hints.length) return [];
+  return sections.filter((s) =>
+    hints.some((hint) => s.name.toLowerCase().includes(hint.toLowerCase()))
+  );
+}
+
+function replaceLatexSection(latex, section, newContent) {
+  return latex.slice(0, section.startIndex) + newContent + latex.slice(section.endIndex);
+}
+
+function validatePatchedSection(sectionName, rawContent) {
+  let content = stripCodeFence(clean(rawContent));
+  if (!content) return null;
+
+  // Reject if model returned a full LaTeX document
+  if (content.includes('\\documentclass') || content.includes('\\begin{document}')) {
+    log('validatePatch', `full doc returned for "${sectionName}" — rejecting`);
+    return null;
+  }
+
+  // Reject banned review language leaking into proposal prose
+  const reviewLang = BANNED_REVIEW_LANGUAGE.find((phrase) =>
+    content.toLowerCase().includes(phrase)
+  );
+  if (reviewLang) {
+    log('validatePatch', `reviewer language "${reviewLang}" found in "${sectionName}" — rejecting`);
+    return null;
+  }
+
+  // Reject banned app-topic phrases
+  const banned = BANNED_PHRASES.find((phrase) => content.toLowerCase().includes(phrase));
+  if (banned) {
+    log('validatePatch', `banned phrase "${banned}" in "${sectionName}" — rejecting`);
+    return null;
+  }
+
+  // Restore section heading if the model dropped it
+  const isAbstract = sectionName.toLowerCase() === 'abstract';
+  if (isAbstract) {
+    if (!content.includes('\\begin{abstract}')) {
+      content = `\\begin{abstract}\n${content}\n\\end{abstract}`;
+    }
+  } else if (!content.includes(`\\section{${sectionName}}`)) {
+    content = `\\section{${sectionName}}\n${content}`;
+  }
+
+  return content.trim();
+}
+
+async function patchSectionWithApi({ sectionName, sectionContent, critiques, userInstruction, project, model }) {
+  const promptPayload = {
+    task: 'section-patch',
+    sectionName,
+    sectionContent,
+    projectContext: {
+      title: project.title,
+      topic: project.topic,
+      problem: project.problem,
+      method: project.method,
+      evaluation: project.evaluation,
+      references: truncateForModel(project.references, 1000)
+    },
+    selectedCritiques: critiques.map((c) => ({
+      issue: c.question || c.title,
+      analysis: c.analysis,
+      suggestedFix: c.suggestedFix,
+      severity: c.severity
+    })),
+    userInstruction: userInstruction || undefined
+  };
+
+  const content = await callModel({
+    systemPrompt: SECTION_EDIT_SYSTEM_PROMPT,
+    payload: promptPayload,
+    model,
+    temperature: 0.1
+  });
+
+  const parsed = parseJsonContent(content);
+  const raw = clean(parsed.sectionLatex || parsed.latex || parsed.content || '');
+  return validatePatchedSection(sectionName, raw);
+}
+
+async function patchWithApi({ project, proposalLatex, sections, byField, userInstruction }) {
+  const model = clean(process.env.LLM_MODEL) || 'gpt-4o-mini';
+  const warnings = [];
+
+  // Build map: sectionName → { section, critiques, fields }
+  const sectionPatchMap = new Map();
+
+  for (const [field, critiques] of Object.entries(byField)) {
+    const matched = findSectionsForField(sections, field);
+    if (!matched.length) {
+      warnings.push(`No LaTeX section matched field "${field}" — skipped.`);
+      continue;
+    }
+    for (const section of matched) {
+      if (!sectionPatchMap.has(section.name)) {
+        sectionPatchMap.set(section.name, { section, critiques: [], fields: [] });
+      }
+      const entry = sectionPatchMap.get(section.name);
+      entry.critiques.push(...critiques);
+      if (!entry.fields.includes(field)) entry.fields.push(field);
+    }
+  }
+
+  // If only a userInstruction (no critiques), apply to the method/approach section
+  if (userInstruction && sectionPatchMap.size === 0) {
+    const fallback = findSectionsForField(sections, 'method');
+    if (fallback.length) {
+      const s = fallback[0];
+      sectionPatchMap.set(s.name, { section: s, critiques: [], fields: ['method'] });
+    }
+  }
+
+  if (sectionPatchMap.size === 0) {
+    return {
+      mode: 'api',
+      provider: process.env.LLM_API_URL,
+      proposalLatex,
+      patchedSections: [],
+      warnings: [...warnings, 'No matching sections found. Check that the proposal has the expected section headings.'],
+      summary: 'No sections were patched.'
+    };
+  }
+
+  // Make one LLM call per unique section, collect results
+  const patchResults = [];
+  for (const [sectionName, { section, critiques, fields }] of sectionPatchMap) {
+    log('patchWithApi', `patching "${sectionName}" (fields: ${fields.join(', ')}, critiques: ${critiques.length})`);
+    try {
+      const patchedContent = await patchSectionWithApi({
+        sectionName,
+        sectionContent: section.content,
+        critiques,
+        userInstruction,
+        project,
+        model
+      });
+      if (patchedContent) {
+        patchResults.push({ section, patchedContent, sectionName, fields, critiques });
+      } else {
+        warnings.push(`Patch for "${sectionName}" was rejected by guardrails — section unchanged.`);
+      }
+    } catch (err) {
+      warnings.push(`Patch for "${sectionName}" failed: ${err.message}`);
+    }
+  }
+
+  // Apply patches bottom-to-top so earlier position indices stay valid
+  patchResults.sort((a, b) => b.section.startIndex - a.section.startIndex);
+
+  let updatedLatex = proposalLatex;
+  const patchedSections = [];
+
+  for (const { section, patchedContent, sectionName, fields, critiques } of patchResults) {
+    updatedLatex = replaceLatexSection(updatedLatex, section, patchedContent);
+    patchedSections.push({
+      sectionName,
+      targetField: fields.join(', '),
+      before: section.content.slice(0, 300),
+      after: patchedContent.slice(0, 300),
+      appliedCritiques: critiques.map((c) => c.question || c.title).filter(Boolean)
+    });
+  }
+
+  const summary = patchedSections.length
+    ? `Patched ${patchedSections.length} section(s): ${patchedSections.map((s) => s.sectionName).join(', ')}.`
+    : `No sections were patched. ${warnings.join(' ')}`;
+
+  return {
+    mode: 'api',
+    provider: process.env.LLM_API_URL,
+    proposalLatex: updatedLatex,
+    patchedSections,
+    warnings,
+    summary
+  };
+}
+
+function patchLocally({ proposalLatex }) {
+  return {
+    mode: 'local-fallback',
+    provider: 'template',
+    proposalLatex,
+    patchedSections: [],
+    warnings: ['Targeted section editing requires an LLM API key. Use the LaTeX editor to make manual changes.'],
+    summary: 'No patches applied — LLM not available.'
+  };
+}
+
+export async function patchProposal(payload) {
+  const project = normalizePayload(payload.project || payload);
+  const proposalLatex = clean(payload.proposalLatex) || '';
+  const selectedCritiques = Array.isArray(payload.selectedCritiques) ? payload.selectedCritiques : [];
+  const userInstruction = clean(payload.userInstruction) || '';
+
+  log('patchProposal', `title="${project.title}" | critiques=${selectedCritiques.length} | instruction=${Boolean(userInstruction)}`);
+
+  if (!proposalLatex) throw new Error('proposalLatex is required for patching.');
+
+  // Group critiques by targetField
+  const byField = {};
+  for (const critique of selectedCritiques) {
+    const field = normalizeRevisionField(critique.targetField) || 'method';
+    if (!byField[field]) byField[field] = [];
+    byField[field].push(critique);
+  }
+
+  // userInstruction with no critiques → still patch
+  if (!selectedCritiques.length && userInstruction) {
+    byField.method = byField.method || [];
+  }
+
+  const sections = extractLatexSections(proposalLatex);
+  log('patchProposal', `extracted ${sections.length} sections: ${sections.map((s) => s.name).join(', ')}`);
+
+  if (process.env.LLM_API_KEY && process.env.LLM_API_URL) {
+    try {
+      return await patchWithApi({ project, proposalLatex, sections, byField, userInstruction });
+    } catch (error) {
+      log('patchProposal', `API patch failed: ${error.message} — falling back`);
+      return patchLocally({ proposalLatex });
+    }
+  }
+
+  return patchLocally({ proposalLatex });
+}
+
 export async function startAgentSession(payload) {
   const project = normalizePayload(payload);
   const checklist = extractChecklist(project.requirements || DEFAULT_REQUIREMENTS);

@@ -122,6 +122,7 @@ function App() {
   const [selectedGapId, setSelectedGapId] = useState('');
   const [reviewStatus, setReviewStatus] = useState('idle');
   const [reviewCycle, setReviewCycle] = useState(EMPTY_REVIEW_CYCLE);
+  const [patchResult, setPatchResult] = useState(null);
   const [enhanceQueriesWithAI, setEnhanceQueriesWithAI] = useState(false);
 
   const abortRef = useRef(null);
@@ -446,6 +447,7 @@ function App() {
     updatePdfUrl('');
     setReviewCycle(EMPTY_REVIEW_CYCLE);
     setReviewStatus('idle');
+    setPatchResult(null);
   }
 
   function updatePdfUrl(nextUrl) {
@@ -476,12 +478,18 @@ function App() {
     setSelectedGapId('');
     setReviewStatus('idle');
     setReviewCycle(EMPTY_REVIEW_CYCLE);
+    setPatchResult(null);
   }
 
   function cancelStatus() { abortRef.current?.abort(); }
   function cancelGap() { gapAbortRef.current?.abort(); }
   function cancelReview() { reviewAbortRef.current?.abort(); }
   function cancelEvalReport() { evalReportAbortRef.current?.abort(); }
+
+  function regenerateFullProposal() {
+    if (!window.confirm('Regenerate the full proposal from project state?\n\nThis rewrites every section from scratch and may change unrelated content. Use targeted edits for small fixes.')) return;
+    generateProposal();
+  }
 
   async function applyLatexEdits() {
     const latex = latexEditorValue.trim();
@@ -711,6 +719,7 @@ function App() {
 
     setReviewStatus('critiquing');
     setError('');
+    setPatchResult(null);
 
     try {
       const previousCritiques = reviewCycle.rounds.flatMap((round) => round.critiques || []);
@@ -770,6 +779,10 @@ function App() {
       setError('Select at least one critique or add revision instructions before applying changes.');
       return;
     }
+    if (!result?.proposalLatex) {
+      setError('Generate a proposal before applying review changes.');
+      return;
+    }
 
     reviewAbortRef.current?.abort();
     const controller = new AbortController();
@@ -779,38 +792,39 @@ function App() {
     setError('');
 
     try {
-      const revision = await postJson('/api/review/revise', {
+      const patch = await postJson('/api/review/patch', {
         project,
+        proposalLatex: result.proposalLatex,
         selectedCritiques,
         userInstruction: reviewCycle.userInstruction
       }, controller.signal);
 
-      const revisedProject = { ...EMPTY_PROJECT, ...(revision.project || project) };
+      const nextPdfUrl = await exportPdfUrl(patch.proposalLatex, project.title || 'proposal');
 
-      const nextResult = await postJson('/api/proposal', {
-        ...revisedProject,
-        topic: revisedProject.topic || revisedProject.title,
-        literatureContext: litCtx(revisedProject),
-        requirements: DEFAULT_REQUIREMENTS
-      }, controller.signal);
+      // Persist patched LaTeX to localStorage immediately — before React re-renders — so a
+      // reload between here and the auto-save useEffect doesn't lose the change.
+      try {
+        const raw = localStorage.getItem(MEMORY_KEY);
+        if (raw) {
+          const snap = JSON.parse(raw);
+          if (snap.result) snap.result.proposalLatex = patch.proposalLatex;
+          else snap.result = { proposalLatex: patch.proposalLatex };
+          snap.savedAt = new Date().toISOString();
+          localStorage.setItem(MEMORY_KEY, JSON.stringify(snap));
+        }
+      } catch { /* non-fatal */ }
 
-      const nextPdfUrl = await exportPdfUrl(nextResult.proposalLatex, revisedProject.title || 'proposal');
-
-      // Only update state after all three operations succeed
-      setProject(revisedProject);
-      setReviewCycle((current) => ({ ...current, userInstruction: '' }));
-      setResult(nextResult);
+      // Atomic: only update state after both succeed
+      setResult((current) => ({ ...current, proposalLatex: patch.proposalLatex }));
       updatePdfUrl(nextPdfUrl);
-      setRunLog((current) => [
-        ...current,
-        logEntry('Review', revision.runMessage || 'Applied selected critique fixes.'),
-        logEntry('Draft', `Regenerated proposal after review cycle using ${nextResult.mode}.`)
-      ]);
-      setActiveTab('evaluation');
+      setReviewCycle((current) => ({ ...current, userInstruction: '' }));
+      setPatchResult({ patchedSections: patch.patchedSections || [], summary: patch.summary, warnings: patch.warnings || [] });
+      setRunLog((current) => [...current, logEntry('Patch', patch.summary || 'Applied targeted section edits.')]);
+      setActiveStage(3);
     } catch (requestError) {
       if (isAbortError(requestError)) {
-        console.log('[LLM] Request cancelled by user: review revision + re-draft');
-        setRunLog((current) => [...current, logEntry('Canceled', 'Review revision stopped.')]);
+        console.log('[LLM] Request cancelled by user: review patch');
+        setRunLog((current) => [...current, logEntry('Canceled', 'Review patch stopped.')]);
         return;
       }
       setError(readError(requestError));
@@ -1546,13 +1560,49 @@ function App() {
                       disabled={reviewStatus !== 'idle' || (!selectedCritiques.length && !reviewCycle.userInstruction.trim())}
                     >
                       {reviewStatus === 'revising' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                      Apply Selected Changes and Regenerate
+                      {reviewStatus === 'revising' ? 'Patching sections…' : 'Apply Targeted Edits'}
                     </button>
                     {reviewStatus === 'revising' ? (
                       <button className="secondary" type="button" onClick={cancelReview}>
                         <X size={16} aria-hidden="true" /> Cancel
                       </button>
                     ) : null}
+                  </div>
+
+                  {patchResult ? (
+                    <div className="patch-summary">
+                      <p className="patch-summary-title">{patchResult.summary}</p>
+                      {patchResult.patchedSections.length > 0 ? (
+                        <ul className="patch-section-list">
+                          {patchResult.patchedSections.map((s) => (
+                            <li key={s.sectionName}>
+                              <strong>{s.sectionName}</strong>
+                              {s.appliedCritiques.length > 0 ? (
+                                <span> — {s.appliedCritiques.join('; ')}</span>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {patchResult.warnings.length > 0 ? (
+                        <ul className="patch-warning-list">
+                          {patchResult.warnings.map((w, i) => <li key={i}>{w}</li>)}
+                        </ul>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  <div className="full-regen-wrap">
+                    <button
+                      className="secondary"
+                      type="button"
+                      onClick={regenerateFullProposal}
+                      disabled={reviewStatus !== 'idle' || status !== 'idle'}
+                    >
+                      {status === 'drafting' ? <Loader2 className="spin" size={15} aria-hidden="true" /> : null}
+                      Full Regeneration
+                    </button>
+                    <span className="full-regen-warning">Rewrites the entire proposal from project state — may change unrelated sections.</span>
                   </div>
                 </section>
               </section>
