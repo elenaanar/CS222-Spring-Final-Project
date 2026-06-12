@@ -375,31 +375,43 @@ async function callLlmJson(systemPrompt, payload) {
         return parsed;
     }
 
-    const response = await fetch(process.env.LLM_API_URL, {
-        method: 'POST',
-        headers: {
-            Authorization: `Bearer ${process.env.LLM_API_KEY}`,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-            model,
-            temperature: 0.2,
-            max_tokens: 4096,
-            messages: [
-                { role: 'system', content: systemPrompt },
-                { role: 'user', content: JSON.stringify(payload, null, 2) }
-            ]
-        })
-    });
-    const data = await response.json();
+    const makeRequest = async (modelId) => {
+        const response = await fetch(process.env.LLM_API_URL, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${process.env.LLM_API_KEY}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: modelId,
+                temperature: 0.2,
+                max_tokens: 4096,
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: JSON.stringify(payload, null, 2) }
+                ]
+            })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error?.message || `API returned ${response.status}`);
+        const text = typeof data?.choices?.[0]?.message?.content === 'string'
+            ? data.choices[0].message.content
+            : JSON.stringify(data);
+        return text;
+    };
 
-    if (!response.ok) {
-        throw new Error(data?.error?.message || `API returned ${response.status}`);
+    let content;
+    try {
+        content = await makeRequest(model);
+    } catch (error) {
+        const fallbackModel = clean(process.env.LLM_FALLBACK_MODEL) || 'meta-llama/llama-3.1-8b-instruct:free';
+        if (/requires more credits|can only afford|insufficient credits|balance|quota/i.test(error.message) && fallbackModel !== model) {
+            log('callLlmJson', `credit limit hit for ${model} → retrying with fallback ${fallbackModel}`);
+            content = await makeRequest(fallbackModel);
+        } else {
+            throw error;
+        }
     }
-
-    const content = typeof data?.choices?.[0]?.message?.content === 'string'
-        ? data.choices[0].message.content
-        : JSON.stringify(data);
 
     const parsed = parseJsonContent(content);
     log('callLlmJson', `← LLM response | model=${model} | task=${task} | ${Date.now() - t0}ms | ${content?.length ?? 0} chars`);
@@ -499,14 +511,21 @@ function truncate(value, max) {
 
 function parseJsonContent(content) {
     const text = clean(content);
-    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-    const candidate = fenced?.[1] || text;
 
-    try {
-        return JSON.parse(candidate);
-    } catch {
-        return {};
+    const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    if (fenced?.[1]) {
+        try { return JSON.parse(fenced[1]); } catch { /* fall through */ }
     }
+
+    try { return JSON.parse(text); } catch { /* fall through */ }
+
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+        try { return JSON.parse(text.slice(start, end + 1)); } catch { /* fall through */ }
+    }
+
+    return {};
 }
 
 function clampNumber(value, min, max, fallback) {

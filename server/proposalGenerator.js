@@ -28,7 +28,13 @@ const EMPTY_PROJECT_FOR_SERVER = {
   requirements: DEFAULT_REQUIREMENTS
 };
 
-const SYSTEM_PROMPT = `You are a research proposal agent for a CS research proposal.
+const SYSTEM_PROMPT = `You are a research proposal writer. Your job is to turn a rough research direction into a complete, specific, academically credible research proposal in LaTeX.
+
+The project fields you receive are ROUGH INPUTS — direction-setting notes, not final prose. Your job is to expand them into fully developed, specific content using your knowledge of the research area. Do NOT copy the field values verbatim into the proposal. Instead:
+- Make claims specific to the actual topic and domain (methods, datasets, metrics, prior work)
+- Replace vague phrases like "known technical limitations" with the actual limitations in this field
+- Replace generic methods like "build a model" with a concrete technical approach appropriate to the topic
+- Fill gaps using your knowledge of the research area, marking anything speculative as an assumption
 
 Return strict JSON with this shape:
 {
@@ -46,16 +52,14 @@ Return strict JSON with this shape:
 }
 
 Rules:
+- The proposal must read like a real academic research proposal with specific claims, not a template skeleton.
 - The proposal artifact must be LaTeX, not Markdown.
 - Return a complete LaTeX document with \\documentclass[11pt]{article}, 1-inch margins, title, sections, and bibliography/source notes.
 - Use compile-safe LaTeX. Avoid minted, shell-escape, external images, custom fonts, or packages that require extra system tools.
 - Do not use \\includegraphics or reference external image files. Build figures directly in LaTeX with text boxes, minipages, tabular layouts, lists, or simple arrows.
-- Write the final artifact as a research proposal, not as a short course implementation report.
 - Keep the proposed research plan credible, appropriately scoped, and supported by milestones, resources, risks, and evaluation criteria.
-- Mark unsupported claims as assumptions.
-- Include a concrete agent workflow when the method involves an agent.
-- Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.
-- Do not invent citations. Use source notes or assumptions when sources are missing.`;
+- Mark unsupported claims as assumptions rather than inventing citations.
+- Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.`;
 
 const QUESTION_SYSTEM_PROMPT = `You are running an interactive proposal-agent workflow.
 
@@ -649,10 +653,11 @@ async function generateWithApi(project, checklist) {
   }
 
   const promptPayload = {
-    project,
+    roughInputs: project,
     checklist,
+    instructions: 'The roughInputs fields are direction-setting notes. Expand them into a complete, specific, academically detailed research proposal. Use your knowledge of the topic to add concrete methods, datasets, metrics, and prior work context. Do not copy the field values verbatim.',
     outputContract: {
-      proposalLatex: 'Complete compile-ready LaTeX source for proposal.tex',
+      proposalLatex: 'Complete compile-ready LaTeX source for proposal.tex — specific claims, real methods, concrete evaluation',
       complianceMatrix: 'Array of requirement coverage rows',
       evaluationReport: 'Plain text or Markdown self-evaluation',
       questions: 'Remaining clarifying questions'
@@ -736,31 +741,45 @@ async function callGemini({ systemPrompt, payload, model, temperature }) {
   return content;
 }
 
+function isCreditError(message) {
+  return /requires more credits|can only afford|insufficient credits|balance|quota/i.test(message);
+}
+
 async function callOpenAiCompatible({ systemPrompt, payload, model, temperature }) {
-  const response = await fetch(process.env.LLM_API_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${process.env.LLM_API_KEY}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model,
-      temperature,
-      max_tokens: 4096,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: JSON.stringify(payload, null, 2) }
-      ]
-    })
-  });
+  const makeRequest = async (modelId) => {
+    const response = await fetch(process.env.LLM_API_URL, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${process.env.LLM_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: modelId,
+        temperature,
+        max_tokens: 4096,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: JSON.stringify(payload, null, 2) }
+        ]
+      })
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error?.message || `API returned ${response.status}`);
+    }
+    return readModelContent(data);
+  };
 
-  const data = await response.json();
-
-  if (!response.ok) {
-    throw new Error(data?.error?.message || `API returned ${response.status}`);
+  try {
+    return await makeRequest(model);
+  } catch (error) {
+    const fallbackModel = clean(process.env.LLM_FALLBACK_MODEL) || 'meta-llama/llama-3.1-8b-instruct:free';
+    if (isCreditError(error.message) && fallbackModel !== model) {
+      log('callOpenAiCompatible', `credit limit hit for ${model} → retrying with fallback ${fallbackModel}`);
+      return await makeRequest(fallbackModel);
+    }
+    throw error;
   }
-
-  return readModelContent(data);
 }
 
 function generateLocally(project, checklist) {
@@ -1325,19 +1344,30 @@ function readModelContent(data) {
 
 function parseJsonContent(content) {
   const trimmed = clean(content);
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced?.[1] || trimmed;
 
-  try {
-    return JSON.parse(candidate);
-  } catch {
-    return {
-      proposalLatex: looksLikeLatex(trimmed) ? trimmed : '',
-      complianceMatrix: [],
-      evaluationReport: '# Evaluation Report\n\nThe API returned text that was not JSON.',
-      questions: ['Should the API prompt be tightened to return strict JSON?']
-    };
+  // 1. Try fenced code block first
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    try { return JSON.parse(fenced[1]); } catch { /* fall through */ }
   }
+
+  // 2. Try the raw content directly
+  try { return JSON.parse(trimmed); } catch { /* fall through */ }
+
+  // 3. Try to find the outermost {...} block (handles prose wrapping the JSON)
+  const start = trimmed.indexOf('{');
+  const end = trimmed.lastIndexOf('}');
+  if (start !== -1 && end > start) {
+    try { return JSON.parse(trimmed.slice(start, end + 1)); } catch { /* fall through */ }
+  }
+
+  // 4. If it looks like raw LaTeX, salvage it
+  return {
+    proposalLatex: looksLikeLatex(trimmed) ? trimmed : '',
+    complianceMatrix: [],
+    evaluationReport: '# Evaluation Report\n\nThe model response could not be parsed. Try regenerating.',
+    questions: []
+  };
 }
 
 function coerceResult(result, project, checklist) {
