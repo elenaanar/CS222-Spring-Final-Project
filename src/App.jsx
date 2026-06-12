@@ -7,14 +7,18 @@ import {
   FileText,
   ListChecks,
   Loader2,
+  Menu,
   Play,
   RefreshCw,
   Send,
   Sparkles,
+  Trash2,
+  UserCircle,
   X
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useAuth } from './context/useAuth.js';
 
 const DEFAULT_REQUIREMENTS = `Proposal must include:
 - Project title
@@ -69,6 +73,8 @@ const STAGES = [
 
 
 const MEMORY_KEY = 'proposal-agent-final-project-memory-v1';
+const SAVES_KEY = 'proposal-agent-saves-v1';
+const MAX_SAVES = 50;
 const EMPTY_LITERATURE = {
   topic: '',
   mode: 'idle',
@@ -129,9 +135,17 @@ function App() {
   const gapAbortRef = useRef(null);
   const reviewAbortRef = useRef(null);
   const evalReportAbortRef = useRef(null);
+  const manualSaveRef = useRef(null);
   const [evalReportStatus, setEvalReportStatus] = useState('idle');
   const [latexEditorValue, setLatexEditorValue] = useState('');
   const [latexExportStatus, setLatexExportStatus] = useState('idle');
+
+  const { user, loading: authLoading, login, logout, authError } = useAuth();
+  const [savedFlash, setSavedFlash] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [savesOpen, setSavesOpen] = useState(false);
+  const [saves, setSaves] = useState([]);
+  const menuRef = useRef(null);
 
   const litCtx = (proj) => proj.literatureContext || EMPTY_LITERATURE_CONTEXT;
 
@@ -172,6 +186,7 @@ function App() {
     setMemoryReady(true);
   }, []);
 
+
   useEffect(() => {
     return () => {
       if (pdfUrl) URL.revokeObjectURL(pdfUrl);
@@ -195,6 +210,26 @@ function App() {
       setActiveStage(maxUnlockedStage);
     }
   }, [activeStage, maxUnlockedStage]);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    function handleOutsideClick(e) {
+      if (menuRef.current && !menuRef.current.contains(e.target)) setMenuOpen(false);
+    }
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, [menuOpen]);
+
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+        e.preventDefault();
+        manualSaveRef.current?.();
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   // Sync editor when a new proposal is generated (but not while user is editing)
   useEffect(() => {
@@ -834,8 +869,8 @@ function App() {
     }
   }
 
-  function saveMemory({ silent = false } = {}) {
-    const snapshot = {
+  function buildSnapshot() {
+    return {
       savedAt: new Date().toISOString(),
       topicInput,
       project,
@@ -855,12 +890,49 @@ function App() {
       activeStage,
       enhanceQueriesWithAI
     };
+  }
 
+  function saveMemory({ silent = false } = {}) {
+    const snapshot = buildSnapshot();
     localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
     setMemorySavedAt(snapshot.savedAt);
 
     if (!silent) {
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 2000);
       setRunLog((current) => [...current, logEntry('Memory', 'Saved workspace memory.')]);
+    }
+  }
+
+  async function applySnapshot(snapshot) {
+    setTopicInput(snapshot.topicInput || '');
+    setProject({ ...EMPTY_PROJECT, ...(snapshot.project || {}) });
+    setFieldSuggestions(Array.isArray(snapshot.fieldSuggestions) ? snapshot.fieldSuggestions : []);
+    setDecisions(Array.isArray(snapshot.decisions) ? snapshot.decisions : []);
+    setQuestions(Array.isArray(snapshot.questions) ? snapshot.questions : []);
+    setResult(snapshot.result || null);
+    setLiterature({ ...EMPTY_LITERATURE, ...(snapshot.literature || {}) });
+    setSelectedPaperIds(Array.isArray(snapshot.selectedPaperIds) ? snapshot.selectedPaperIds : []);
+    setGapResult({ ...EMPTY_GAP_RESULT, ...(snapshot.gapResult || {}) });
+    setSelectedGapId(snapshot.selectedGapId || '');
+    setReviewCycle({ ...EMPTY_REVIEW_CYCLE, ...(snapshot.reviewCycle || {}) });
+    setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
+    setActiveTab(['evaluation', 'matrix'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
+    setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
+    setDecisionIndex(Number(snapshot.decisionIndex || 0));
+    setActiveStage(Number.isFinite(Number(snapshot.activeStage)) ? Number(snapshot.activeStage) : 0);
+    setEnhanceQueriesWithAI(Boolean(snapshot.enhanceQueriesWithAI));
+    setMemorySavedAt(snapshot.savedAt || '');
+    setError('');
+
+    if (snapshot.result?.proposalLatex) {
+      try {
+        updatePdfUrl(await exportPdfUrl(snapshot.result.proposalLatex, snapshot.project?.title || 'proposal'));
+      } catch {
+        updatePdfUrl('');
+      }
+    } else {
+      updatePdfUrl('');
     }
   }
 
@@ -870,39 +942,8 @@ function App() {
       if (!silent) setError('No saved memory found.');
       return;
     }
-
     try {
-      const snapshot = JSON.parse(raw);
-      setTopicInput(snapshot.topicInput || '');
-      setProject({ ...EMPTY_PROJECT, ...(snapshot.project || {}) });
-      setFieldSuggestions(Array.isArray(snapshot.fieldSuggestions) ? snapshot.fieldSuggestions : []);
-      setDecisions(Array.isArray(snapshot.decisions) ? snapshot.decisions : []);
-      setQuestions(Array.isArray(snapshot.questions) ? snapshot.questions : []);
-      setResult(snapshot.result || null);
-      setLiterature({ ...EMPTY_LITERATURE, ...(snapshot.literature || {}) });
-      setSelectedPaperIds(Array.isArray(snapshot.selectedPaperIds) ? snapshot.selectedPaperIds : []);
-      setGapResult({ ...EMPTY_GAP_RESULT, ...(snapshot.gapResult || {}) });
-      setSelectedGapId(snapshot.selectedGapId || '');
-      setReviewCycle({ ...EMPTY_REVIEW_CYCLE, ...(snapshot.reviewCycle || {}) });
-      setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
-      setActiveTab(['evaluation', 'matrix'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
-      setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
-      setDecisionIndex(Number(snapshot.decisionIndex || 0));
-      setActiveStage(Number.isFinite(Number(snapshot.activeStage)) ? Number(snapshot.activeStage) : 0);
-      setEnhanceQueriesWithAI(Boolean(snapshot.enhanceQueriesWithAI));
-      setMemorySavedAt(snapshot.savedAt || '');
-      setError('');
-
-      if (snapshot.result?.proposalLatex) {
-        try {
-          updatePdfUrl(await exportPdfUrl(snapshot.result.proposalLatex, snapshot.project?.title || 'proposal'));
-        } catch {
-          updatePdfUrl('');
-        }
-      } else {
-        updatePdfUrl('');
-      }
-
+      await applySnapshot(JSON.parse(raw));
       if (!silent) {
         setRunLog((current) => [...current, logEntry('Memory', 'Reloaded saved workspace memory.')]);
       }
@@ -911,20 +952,175 @@ function App() {
     }
   }
 
-  function clearSavedMemory() {
+
+  function readSavesFromStorage() {
+    try { return JSON.parse(localStorage.getItem(SAVES_KEY) || '[]'); } catch { return []; }
+  }
+
+  function manualSave() {
+    const snapshot = buildSnapshot();
+    const existing = readSavesFromStorage();
+    const entry = {
+      id: Date.now(),
+      savedAt: snapshot.savedAt,
+      proposalTitle: project.title || '',
+      snapshot
+    };
+    const updated = [entry, ...existing].slice(0, MAX_SAVES);
+    localStorage.setItem(SAVES_KEY, JSON.stringify(updated));
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(snapshot));
+    setMemorySavedAt(snapshot.savedAt);
+    setSavedFlash(true);
+    setTimeout(() => setSavedFlash(false), 2000);
+    setMenuOpen(false);
+    setRunLog((current) => [...current, logEntry('Save', `Version #${updated.length} saved${entry.proposalTitle ? ` — ${entry.proposalTitle}` : ''}.`)]);
+  }
+  // Keep ref in sync so the keyboard shortcut always calls the latest version
+  manualSaveRef.current = manualSave;
+
+  function openSavesPicker() {
+    setSaves(readSavesFromStorage());
+    setSavesOpen(true);
+    setMenuOpen(false);
+  }
+
+  async function restoreSave(entry) {
+    await applySnapshot(entry.snapshot);
+    localStorage.setItem(MEMORY_KEY, JSON.stringify(entry.snapshot));
+    setMemorySavedAt(entry.savedAt);
+    setSavesOpen(false);
+    setRunLog((current) => [...current, logEntry('Restore', `Restored${entry.proposalTitle ? ` — ${entry.proposalTitle}` : ''}`)]);
+  }
+
+  function deleteSave(id) {
+    if (!window.confirm('Delete this save?\n\nThis cannot be undone.')) return;
+    const updated = saves.filter((s) => s.id !== id);
+    localStorage.setItem(SAVES_KEY, JSON.stringify(updated));
+    setSaves(updated);
+  }
+
+  function clearAllSaves() {
+    if (!window.confirm('Clear all saves?\n\nThis permanently deletes every saved version and cannot be undone.')) return;
+    localStorage.removeItem(SAVES_KEY);
     localStorage.removeItem(MEMORY_KEY);
     setMemorySavedAt('');
+    setMenuOpen(false);
+    setRunLog((current) => [...current, logEntry('Clear', 'All saves cleared.')]);
+  }
+
+  if (authLoading) {
+    return (
+      <div className="auth-init-screen">
+        <Loader2 size={28} className="spin" />
+        <span>Loading…</span>
+      </div>
+    );
   }
 
   return (
     <main className="app-shell">
       <header className="topbar">
-        <h1>Research Proposal Agent</h1>
-        <span className="status-pill">
-          <Sparkles size={16} aria-hidden="true" />
-          {result?.mode || (fieldSuggestions.length ? 'structuring' : 'ready')}
-        </span>
+        {/* Hamburger — top left */}
+        <div className="topbar-left" ref={menuRef}>
+          <button
+            className="hamburger-btn"
+            type="button"
+            onClick={() => setMenuOpen((o) => !o)}
+            aria-label="Menu"
+          >
+            <Menu size={22} />
+            {savedFlash && <span className="hamburger-saved-badge">✓</span>}
+          </button>
+
+          {menuOpen && (
+            <div className="hamburger-dropdown">
+              <span className="hamburger-timestamp">
+                {memorySavedAt ? `Auto-saved ${formatSavedAt(memorySavedAt)}` : 'Not yet saved'}
+              </span>
+              <button className="hm-item" type="button" onClick={manualSave}>
+                Save
+              </button>
+              <button className="hm-item" type="button" onClick={openSavesPicker}>
+                Load version…
+              </button>
+              <button className="hm-item danger" type="button" onClick={clearAllSaves}>
+                Clear all saves
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Title — center */}
+        <div className="topbar-center">
+          <h1>Research Proposal Agent</h1>
+          <span className="status-pill">
+            <Sparkles size={16} aria-hidden="true" />
+            {result?.mode || (fieldSuggestions.length ? 'structuring' : 'ready')}
+          </span>
+        </div>
+
+        {/* Auth — top right */}
+        <div className="topbar-right">
+          {user ? (
+            <div className="nav-auth-user">
+              <div className="nav-auth-info">
+                <span className="nav-user-name">{user.displayName}</span>
+                <span className="nav-user-email">{user.email}</span>
+              </div>
+              <button className="nav-avatar-btn" type="button" onClick={logout} title="Sign out">
+                {user.photoURL
+                  ? <img src={user.photoURL} alt={user.displayName} className="nav-avatar" referrerPolicy="no-referrer" />
+                  : <UserCircle size={36} strokeWidth={1.5} />}
+              </button>
+            </div>
+          ) : (
+            <div className="nav-signin-wrap">
+              <button className="nav-signin-btn" type="button" onClick={login} title="Sign in with Google">
+                <UserCircle size={30} strokeWidth={1.5} />
+                <span>Sign in</span>
+              </button>
+              {authError && <span className="nav-auth-error" title={authError}>!</span>}
+            </div>
+          )}
+        </div>
       </header>
+
+      {/* Saves picker overlay */}
+      {savesOpen && (
+        <div className="saves-overlay" onClick={() => setSavesOpen(false)}>
+          <div className="saves-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="saves-modal-head">
+              <h3>Load Version</h3>
+              <button className="icon-btn" type="button" onClick={() => setSavesOpen(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            {saves.length === 0 ? (
+              <p className="saves-empty">No saves yet. Use the menu to save a version first.</p>
+            ) : (
+              <ul className="saves-list">
+                {saves.map((entry, i) => (
+                  <li key={entry.id} className="saves-item" onClick={() => restoreSave(entry)}>
+                    <span className="saves-number">#{saves.length - i}</span>
+                    <div className="saves-meta">
+                      <span className="saves-title">{entry.proposalTitle || 'Untitled'}</span>
+                      <span className="saves-date">{formatSavedAt(entry.savedAt)}</span>
+                    </div>
+                    <button
+                      className="saves-item-delete"
+                      type="button"
+                      title="Delete this save"
+                      onClick={(e) => { e.stopPropagation(); deleteSave(entry.id); }}
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
 
       <section className="workspace single-pane">
         <section className="workflow-artifact">
@@ -949,23 +1145,6 @@ function App() {
             ))}
           </div>
 
-          <div className="memory-bar">
-            <div>
-              <strong>Memory</strong>
-              <span>{memorySavedAt ? `Saved ${formatSavedAt(memorySavedAt)}` : 'No saved workspace yet'}</span>
-            </div>
-            <div className="memory-actions">
-              <button className="secondary" type="button" onClick={() => saveMemory()}>
-                Save
-              </button>
-              <button className="secondary" type="button" onClick={() => loadSavedMemory()}>
-                Reload
-              </button>
-              <button className="secondary" type="button" onClick={clearSavedMemory}>
-                Clear
-              </button>
-            </div>
-          </div>
 
           {error ? <p className="error-banner">{error}</p> : null}
 
