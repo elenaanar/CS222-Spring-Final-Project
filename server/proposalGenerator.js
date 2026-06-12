@@ -52,6 +52,8 @@ Return strict JSON with this shape:
 }
 
 Rules:
+- CRITICAL: The proposal must be about the user's stated research topic from roughInputs. It must NOT describe or reference the proposal-generation software, workflow app, or any tool used to create it.
+- Do not include phrases like "proposal agent", "proposal generator", "workflow app", "classroom demo", "compliance matrix", or "API-backed generator" anywhere in the proposal body.
 - The proposal must read like a real academic research proposal with specific claims, not a template skeleton.
 - The proposal artifact must be LaTeX, not Markdown.
 - Return a complete LaTeX document with \\documentclass[11pt]{article}, 1-inch margins, title, sections, and bibliography/source notes.
@@ -59,7 +61,10 @@ Rules:
 - Do not use \\includegraphics or reference external image files. Build figures directly in LaTeX with text boxes, minipages, tabular layouts, lists, or simple arrows.
 - Keep the proposed research plan credible, appropriately scoped, and supported by milestones, resources, risks, and evaluation criteria.
 - Mark unsupported claims as assumptions rather than inventing citations.
-- Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.`;
+- Include at least one LaTeX-native figure, diagram, workflow chart, or architecture sketch with a caption.
+- If literatureContext.selectedPapers are provided, reference only those papers for claims they actually support. Do not invent citation details or author names.
+- If literatureContext.continuationIdeas are provided, use them to frame the motivation and gap sections. Use cautious language: "this work builds on limitations noted in prior work" rather than "no prior work exists" or "this is the first."
+- Avoid absolute novelty claims. Use language like "this proposal addresses a direction suggested by prior work" or "we explore an extension identified in the literature."`;
 
 const QUESTION_SYSTEM_PROMPT = `You are running an interactive proposal-agent workflow.
 
@@ -365,7 +370,7 @@ async function reviseWithApi({ project, selectedCritiques, userInstruction }) {
   return {
     mode: 'api',
     provider: process.env.LLM_API_URL,
-    project: revisedProject,
+    project: { ...revisedProject, literatureContext: project.literatureContext },
     appliedChanges: appliedChanges.length ? appliedChanges : ['Applied selected reviewer critiques.'],
     runMessage: 'Applied selected critique fixes to project state.',
     transcript: {
@@ -396,7 +401,7 @@ function reviseLocally({ project, selectedCritiques, userInstruction }) {
   return {
     mode: 'local-fallback',
     provider: 'template',
-    project: nextProject,
+    project: { ...nextProject, literatureContext: project.literatureContext },
     appliedChanges: appliedChanges.length ? appliedChanges : ['No critique selected. Project state unchanged.'],
     runMessage: 'Applied local revision pass from selected critique items.'
   };
@@ -645,6 +650,11 @@ async function refineProjectWithApi(payload) {
   };
 }
 
+const BANNED_PHRASES = [
+  'proposal agent', 'proposal generator', 'workflow app', 'classroom demo',
+  'this app', 'api-backed generator', 'the app', 'our app'
+];
+
 async function generateWithApi(project, checklist) {
   const model = clean(process.env.LLM_MODEL);
 
@@ -652,10 +662,39 @@ async function generateWithApi(project, checklist) {
     throw new Error('LLM_MODEL is required when LLM_API_KEY and LLM_API_URL are configured.');
   }
 
+  const litCtx = project.literatureContext || { selectedPapers: [], continuationIdeas: [], evidenceNotes: [] };
+
   const promptPayload = {
-    roughInputs: project,
+    roughInputs: {
+      title: project.title,
+      topic: project.topic,
+      problem: project.problem,
+      method: project.method,
+      timeline: project.timeline,
+      evaluation: project.evaluation,
+      resources: project.resources,
+      references: project.references
+    },
+    literatureContext: {
+      selectedPapers: (litCtx.selectedPapers || []).slice(0, 10).map((p) => ({
+        title: p.title,
+        authors: p.authors,
+        year: p.year,
+        venue: p.venue,
+        url: p.url,
+        summary: p.summary || p.abstract
+      })),
+      continuationIdeas: (litCtx.continuationIdeas || []).slice(0, 5).map((idea) => ({
+        title: idea.title,
+        description: idea.description,
+        possibleResearchQuestion: idea.possibleResearchQuestion || idea.researchQuestion,
+        possibleMethod: idea.possibleMethod || '',
+        basedOnPapers: idea.basedOnPapers || idea.supportingPaperKeys || []
+      })),
+      evidenceNotes: (litCtx.evidenceNotes || []).slice(0, 5)
+    },
     checklist,
-    instructions: 'The roughInputs fields are direction-setting notes. Expand them into a complete, specific, academically detailed research proposal. Use your knowledge of the topic to add concrete methods, datasets, metrics, and prior work context. Do not copy the field values verbatim.',
+    instructions: 'The roughInputs fields are direction-setting notes. Expand them into a complete, specific, academically detailed research proposal about the stated research topic. Use your knowledge of the topic to add concrete methods, datasets, metrics, and prior work context. Do not copy the field values verbatim. The proposal must be about the research topic, not about any software tool.',
     outputContract: {
       proposalLatex: 'Complete compile-ready LaTeX source for proposal.tex — specific claims, real methods, concrete evaluation',
       complianceMatrix: 'Array of requirement coverage rows',
@@ -671,15 +710,37 @@ async function generateWithApi(project, checklist) {
     temperature: 0.2
   });
   const parsed = parseJsonContent(content);
+  const result = coerceResult(parsed, project, checklist);
+
+  const latexLower = result.proposalLatex.toLowerCase();
+  const foundBanned = BANNED_PHRASES.find((phrase) => latexLower.includes(phrase));
+
+  if (foundBanned) {
+    log('generateWithApi', `Banned phrase "${foundBanned}" detected — regenerating with corrective prompt`);
+    const correctivePayload = {
+      ...promptPayload,
+      correctiveInstruction: `The previous draft incorrectly described a software tool instead of the research topic. Rewrite the entire proposal so it is ONLY about the research topic "${project.title || project.topic}". Do not mention any proposal software, agent app, or generation workflow anywhere.`
+    };
+    const correctedContent = await callModel({
+      systemPrompt: SYSTEM_PROMPT,
+      payload: correctivePayload,
+      model,
+      temperature: 0.1
+    });
+    const correctedParsed = parseJsonContent(correctedContent);
+    return {
+      mode: 'api',
+      provider: process.env.LLM_API_URL,
+      ...coerceResult(correctedParsed, project, checklist),
+      transcript: { prompt: correctivePayload, rawResponse: correctedContent }
+    };
+  }
 
   return {
     mode: 'api',
     provider: process.env.LLM_API_URL,
-    ...coerceResult(parsed, project, checklist),
-    transcript: {
-      prompt: promptPayload,
-      rawResponse: content
-    }
+    ...result,
+    transcript: { prompt: promptPayload, rawResponse: content }
   };
 }
 
@@ -1291,7 +1352,18 @@ function normalizePayload(payload) {
     evaluation: clean(payload.evaluation),
     resources: clean(payload.resources),
     references: clean(payload.references),
-    requirements: clean(payload.requirements) || DEFAULT_REQUIREMENTS
+    requirements: clean(payload.requirements) || DEFAULT_REQUIREMENTS,
+    literatureContext: normalizeLiteratureContext(payload.literatureContext)
+  };
+}
+
+function normalizeLiteratureContext(ctx) {
+  if (!ctx) return { selectedPapers: [], evidenceNotes: [], continuationIdeas: [], citationCandidates: [] };
+  return {
+    selectedPapers: Array.isArray(ctx.selectedPapers) ? ctx.selectedPapers : [],
+    evidenceNotes: Array.isArray(ctx.evidenceNotes) ? ctx.evidenceNotes : [],
+    continuationIdeas: Array.isArray(ctx.continuationIdeas) ? ctx.continuationIdeas : [],
+    citationCandidates: Array.isArray(ctx.citationCandidates) ? ctx.citationCandidates : []
   };
 }
 

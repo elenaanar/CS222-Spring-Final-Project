@@ -30,6 +30,13 @@ const DEFAULT_REQUIREMENTS = `Proposal must include:
 - Resources or budget
 - References, assumptions, or source notes`;
 
+const EMPTY_LITERATURE_CONTEXT = {
+  selectedPapers: [],
+  evidenceNotes: [],
+  continuationIdeas: [],
+  citationCandidates: []
+};
+
 const EMPTY_PROJECT = {
   title: '',
   topic: '',
@@ -39,7 +46,8 @@ const EMPTY_PROJECT = {
   evaluation: '',
   resources: '',
   references: '',
-  requirements: DEFAULT_REQUIREMENTS
+  requirements: DEFAULT_REQUIREMENTS,
+  literatureContext: EMPTY_LITERATURE_CONTEXT
 };
 
 const PROJECT_FIELDS = [
@@ -122,6 +130,8 @@ function App() {
   const [reviewCycle, setReviewCycle] = useState(EMPTY_REVIEW_CYCLE);
   const [enhanceQueriesWithAI, setEnhanceQueriesWithAI] = useState(false);
 
+  const litCtx = (proj) => proj.literatureContext || EMPTY_LITERATURE_CONTEXT;
+
   const matrixStats = useMemo(() => {
     const rows = result?.complianceMatrix || [];
     const covered = rows.filter((row) => /^covered$/i.test(row.status)).length;
@@ -129,7 +139,9 @@ function App() {
   }, [result]);
 
   const acceptedCount = PROJECT_FIELDS.filter(([field]) => Boolean(project[field])).length;
-  const acceptedSuggestionCount = fieldSuggestions.filter((suggestion) => project[suggestion.field] === suggestion.value).length;
+  const acceptedSuggestionCount = fieldSuggestions.filter((suggestion) =>
+    suggestionIsAccepted(project[suggestion.field], suggestion.value)
+  ).length;
   const currentSuggestion = fieldSuggestions[suggestionIndex] || null;
   const currentDecision = decisions[decisionIndex] || null;
   const currentQuestion = questions[0];
@@ -284,7 +296,7 @@ function App() {
         requirements: DEFAULT_REQUIREMENTS
       });
 
-      setProject({ ...EMPTY_PROJECT, ...data.project });
+      setProject((current) => mergeProjectStates(current, data.project));
       setQuestions(data.questions || []);
       setRunLog((current) => [
         ...current,
@@ -308,6 +320,7 @@ function App() {
       const data = await postJson('/api/proposal', {
         ...project,
         topic: project.topic || project.title,
+        literatureContext: litCtx(project),
         requirements: DEFAULT_REQUIREMENTS
       });
       const nextPdfUrl = await exportPdfUrl(data.proposalLatex, project.title || 'proposal');
@@ -329,7 +342,7 @@ function App() {
   }
 
   function acceptSuggestion(suggestion) {
-    updateProjectField(suggestion.field, suggestion.value);
+    mergeProjectField(suggestion.field, suggestion.value);
     advanceSuggestion();
     setRunLog((current) => [...current, logEntry('Accept', `Accepted ${suggestion.label || suggestion.field}.`)]);
   }
@@ -345,7 +358,7 @@ function App() {
   }
 
   function chooseOption(decision, option) {
-    updateProjectField(decision.field, option.value);
+    mergeProjectField(decision.field, option.value);
     setDecisions((current) => {
       const next = current.filter((item) => item.id !== decision.id);
       setDecisionIndex((index) => Math.min(index, Math.max(next.length - 1, 0)));
@@ -368,6 +381,15 @@ function App() {
     setProject((current) => ({
       ...current,
       [field]: value,
+      topic: current.topic || current.title || topicInput
+    }));
+    clearArtifacts();
+  }
+
+  function mergeProjectField(field, value) {
+    setProject((current) => ({
+      ...current,
+      [field]: mergeTextField(current[field], value),
       topic: current.topic || current.title || topicInput
     }));
     clearArtifacts();
@@ -416,6 +438,17 @@ function App() {
     setSelectedPaperIds((current) => {
       const exists = current.includes(paperKey);
       const next = exists ? current.filter((id) => id !== paperKey) : [...current, paperKey];
+
+      setProject((currentProject) => {
+        const currentSelected = litCtx(currentProject).selectedPapers;
+        const nextSelected = exists
+          ? currentSelected.filter((p) => paperStableId(p) !== paperKey)
+          : currentSelected.some((p) => paperStableId(p) === paperKey)
+            ? currentSelected
+            : [...currentSelected, curatedPaper(paper)];
+        return { ...currentProject, literatureContext: { ...litCtx(currentProject), selectedPapers: nextSelected } };
+      });
+
       setGapResult(EMPTY_GAP_RESULT);
       setSelectedGapId('');
 
@@ -436,6 +469,10 @@ function App() {
     if (allIds.length) {
       setActiveSelectedPaperId(allIds[0]);
     }
+    setProject((currentProject) => ({
+      ...currentProject,
+      literatureContext: { ...litCtx(currentProject), selectedPapers: (literature.papers || []).map(curatedPaper) }
+    }));
     setRunLog((current) => [...current, logEntry('Explore', `Selected all ${allIds.length} papers.`)]);
   }
 
@@ -443,16 +480,16 @@ function App() {
     setSelectedPaperIds([]);
     setGapResult(EMPTY_GAP_RESULT);
     setSelectedGapId('');
+    setProject((currentProject) => ({
+      ...currentProject,
+      literatureContext: { ...litCtx(currentProject), selectedPapers: [] }
+    }));
     setRunLog((current) => [...current, logEntry('Explore', 'Cleared all selected papers.')]);
   }
 
   async function detectResearchGaps() {
-    const topPapers = [...(literature.papers || [])]
-      .sort((a, b) => Number(b.relevanceScore || 0) - Number(a.relevanceScore || 0))
-      .slice(0, 24);
-
-    if (topPapers.length < 8) {
-      setError('Retrieve a larger literature set first. At least 8 top papers are needed for gap detection.');
+    if (selectedPapers.length < 3) {
+      setError('Select at least 3 papers first to get continuation suggestions.');
       return;
     }
 
@@ -462,13 +499,13 @@ function App() {
     try {
       const data = await postJson('/api/research-gaps', {
         topic: topicInput || project.title || project.topic,
-        papers: topPapers
+        papers: selectedPapers.map(curatedPaper)
       });
       setGapResult({ ...EMPTY_GAP_RESULT, ...data });
       setSelectedGapId(data.rankedGaps?.[0]?.id || '');
       setRunLog((current) => [
         ...current,
-        logEntry('Gap', data.runMessage || `Detected ${data.rankedGaps?.length || 0} research gaps.`)
+        logEntry('Continuation', data.runMessage || `Found ${data.rankedGaps?.length || 0} continuation suggestions.`)
       ]);
     } catch (requestError) {
       setError(readError(requestError));
@@ -492,20 +529,29 @@ function App() {
   function adoptGap(gap) {
     if (!gap) return;
 
-    const selectedTitles = selectedPapers.slice(0, 5).map((paper) => paper.title).filter(Boolean);
+    const basedOnTitles = (gap.basedOnPapers || gap.supportingPaperKeys || []).slice(0, 5).filter(Boolean);
+    const methodAddition = gap.possibleMethod || `Investigate: "${gap.title}" using targeted methodology, baselines, and evaluation.`;
 
-    setProject((current) => ({
-      ...current,
-      problem: gap.description,
-      method: current.method || `Investigate the gap "${gap.title}" with a targeted methodology, baselines, and ablation checks.`,
-      evaluation:
-        current.evaluation ||
-        `Evaluate novelty and feasibility using reproducible metrics, compare against existing approaches, and validate with selected literature evidence.`,
-      references: [current.references, ...selectedTitles].filter(Boolean).join('\n')
-    }));
+    setProject((current) => {
+      const currentCtx = litCtx(current);
+      const alreadyAdded = currentCtx.continuationIdeas.some((idea) => idea.id === gap.id);
+      return {
+        ...current,
+        problem: mergeTextField(current.problem, gap.description || ''),
+        method: mergeTextField(current.method, methodAddition),
+        references: mergeArrayField(
+          current.references ? current.references.split('\n').filter(Boolean) : [],
+          basedOnTitles
+        ).join('\n'),
+        literatureContext: {
+          ...currentCtx,
+          continuationIdeas: alreadyAdded ? currentCtx.continuationIdeas : [...currentCtx.continuationIdeas, gap]
+        }
+      };
+    });
 
     setSelectedGapId(gap.id);
-    setRunLog((current) => [...current, logEntry('Gap', `Adopted gap: ${gap.title}.`)]);
+    setRunLog((current) => [...current, logEntry('Continuation', `Added to proposal: ${gap.title}.`)]);
     setActiveStage(2);
   }
 
@@ -628,6 +674,7 @@ function App() {
       const nextResult = await postJson('/api/proposal', {
         ...revisedProject,
         topic: revisedProject.topic || revisedProject.title,
+        literatureContext: litCtx(revisedProject),
         requirements: DEFAULT_REQUIREMENTS
       });
       console.log('[applyReviewChanges] ← proposal ok | mode:', nextResult.mode, '| latex chars:', nextResult.proposalLatex?.length);
@@ -949,12 +996,12 @@ function App() {
                         <small>{currentSuggestion.reason}</small>
                         <div className="deck-actions">
                           <button
-                            className={project[currentSuggestion.field] === currentSuggestion.value ? 'secondary accepted' : 'primary'}
+                            className={suggestionIsAccepted(project[currentSuggestion.field], currentSuggestion.value) ? 'secondary accepted' : 'primary'}
                             type="button"
                             onClick={() => acceptSuggestion(currentSuggestion)}
                           >
                             <CheckCircle2 size={16} aria-hidden="true" />
-                            {project[currentSuggestion.field] === currentSuggestion.value ? 'Accepted' : 'Accept and Next'}
+                            {suggestionIsAccepted(project[currentSuggestion.field], currentSuggestion.value) ? 'Accepted' : 'Accept and Next'}
                           </button>
                           <button className="secondary" type="button" onClick={skipSuggestion}>
                             Skip
@@ -987,7 +1034,7 @@ function App() {
                           className={[
                             'deck-dot',
                             index === suggestionIndex ? 'current' : '',
-                            project[suggestion.field] === suggestion.value ? 'done' : ''
+                            suggestionIsAccepted(project[suggestion.field], suggestion.value) ? 'done' : ''
                           ].join(' ')}
                           type="button"
                           aria-label={`Open ${suggestion.label || labelForField(suggestion.field)}`}
@@ -1083,19 +1130,19 @@ function App() {
 
                 <section className="gap-panel gap-decision-card">
                   <div className="gap-decision-header">
-                    <h3>Research Gap Detector</h3>
+                    <h3>Continuation Suggestions</h3>
                     <button
                       className="secondary"
                       type="button"
                       onClick={detectResearchGaps}
-                      disabled={gapStatus !== 'idle' || literature.papers.length < 8}
+                      disabled={gapStatus !== 'idle' || selectedPaperCount < 3}
                     >
                       {gapStatus === 'running' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : null}
-                      Detect Gaps
+                      Suggest Continuations
                     </button>
                   </div>
-                  <p className="gap-hint">Uses top retrieved papers automatically (not manual paper selections).</p>
-                  <p className="gap-hint">Top-paper pool: {Math.min(24, literature.papers.length)} / {literature.papers.length || 0}</p>
+                  <p className="gap-hint">Uses your selected papers to find continuation directions from limitations and future work.</p>
+                  <p className="gap-hint">Selected papers: {selectedPaperCount} {selectedPaperCount < 3 ? '(select at least 3)' : ''}</p>
                   {gapResult.rankedGaps?.length ? (
                     <ol className="gap-list">
                       {gapResult.rankedGaps.map((gap) => {
@@ -1105,27 +1152,23 @@ function App() {
                           <li key={gap.id} className={isSelected ? 'gap-item gap-item-active' : 'gap-item'}>
                             <div className="gap-item-topline">
                               <strong>{gap.title}</strong>
-                              <span className="priority medium">{gap.overallScore}</span>
+                              <span className="priority medium">{gap.feasibility || gap.overallScore}</span>
                             </div>
-                            <p className="gap-addresses"><strong>{gap.category || 'Gap'}</strong> - {gap.confidenceLabel || 'partially explored'}</p>
+                            <p className="gap-addresses"><strong>{gap.type || gap.category || 'continuation'}</strong></p>
                             <p className="gap-description">{gap.description}</p>
-                            <small className="gap-rationale">{gap.rationale}</small>
-                            <div className="gap-metrics">
-                              <span>Novelty: {gap.novelty}</span>
-                              <span>Feasibility: {gap.feasibility}</span>
-                              <span>Data Availability: {gap.availableData}</span>
-                              <span>Relevance: {gap.relevance}</span>
-                              <span>Proposal Potential: {gap.proposalPotential}</span>
-                            </div>
-                            {gap.researchQuestion ? (
-                              <p className="gap-check gap-question">Research question: {gap.researchQuestion}</p>
+                            <small className="gap-rationale">Possible continuation based on selected papers.</small>
+                            {(gap.basedOnPapers || gap.supportingPaperKeys)?.length ? (
+                              <small className="gap-rationale">Based on: {(gap.basedOnPapers || gap.supportingPaperKeys).slice(0, 3).join('; ')}</small>
+                            ) : null}
+                            {gap.researchQuestion || gap.possibleResearchQuestion ? (
+                              <p className="gap-check gap-question">Research question: {gap.possibleResearchQuestion || gap.researchQuestion}</p>
                             ) : null}
                             <div className="deck-actions">
                               <button className="secondary" type="button" onClick={() => setSelectedGapId(gap.id)}>
-                                Consider
+                                Preview
                               </button>
                               <button className="primary" type="button" onClick={() => adoptGap(gap)}>
-                                Use This Gap
+                                Add to Proposal
                               </button>
                             </div>
                           </li>
@@ -1133,7 +1176,7 @@ function App() {
                       })}
                     </ol>
                   ) : (
-                    <p className="gap-hint">No gap run cached yet.</p>
+                    <p className="gap-hint">Select papers and click Suggest Continuations.</p>
                   )}
                 </section>
               </section>
@@ -1584,6 +1627,57 @@ function paperStableId(paper) {
   if (paper?.paperId) return `pid:${paper.paperId}`;
   if (paper?.doi) return `doi:${paper.doi}`;
   return `title:${String(paper?.title || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
+}
+
+function curatedPaper(paper) {
+  return {
+    paperId: String(paper.paperId || ''),
+    doi: String(paper.doi || ''),
+    title: String(paper.title || ''),
+    authors: (Array.isArray(paper.authors) ? paper.authors : []).slice(0, 6),
+    year: paper.year || '',
+    venue: String(paper.venue || ''),
+    url: String(paper.url || ''),
+    abstract: String(paper.abstract || '').slice(0, 500),
+    summary: String(paper.summary || ''),
+    whyRelevant: String(paper.whyRelevant || '')
+  };
+}
+
+function mergeTextField(existing, incoming) {
+  const a = String(existing || '').trim();
+  const b = String(incoming || '').trim();
+  if (!a) return b;
+  if (!b) return a;
+  if (a.toLowerCase().includes(b.toLowerCase().slice(0, 80))) return a;
+  return `${a}\n${b}`;
+}
+
+function mergeArrayField(existing, incoming) {
+  const existingArr = Array.isArray(existing) ? existing : [];
+  const incomingArr = Array.isArray(incoming) ? incoming : [];
+  const normalized = new Set(existingArr.map((item) => String(item).trim().toLowerCase()).filter(Boolean));
+  const additions = incomingArr.filter((item) => item && !normalized.has(String(item).trim().toLowerCase()));
+  return [...existingArr, ...additions];
+}
+
+function mergeProjectStates(current, incoming) {
+  if (!incoming) return current;
+  const textFields = ['problem', 'method', 'timeline', 'evaluation', 'resources', 'references'];
+  const next = { ...current };
+  if (!next.title && incoming.title) next.title = String(incoming.title || '').trim();
+  if (!next.topic && incoming.topic) next.topic = String(incoming.topic || '').trim();
+  textFields.forEach((field) => {
+    const val = String(incoming[field] || '').trim();
+    if (val) next[field] = mergeTextField(current[field], val);
+  });
+  return next;
+}
+
+function suggestionIsAccepted(projectFieldValue, suggestionValue) {
+  const field = String(projectFieldValue || '').toLowerCase();
+  const val = String(suggestionValue || '').toLowerCase().slice(0, 100).trim();
+  return val.length > 10 && field.includes(val);
 }
 
 export default App;
