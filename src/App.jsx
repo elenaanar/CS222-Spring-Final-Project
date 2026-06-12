@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookMarked,
   BookOpen,
+  Image,
   PenLine,
   CheckCircle2,
   ClipboardCheck,
@@ -56,7 +57,8 @@ const EMPTY_PROJECT = {
   references: '',
   requirements: DEFAULT_REQUIREMENTS,
   literatureContext: EMPTY_LITERATURE_CONTEXT,
-  citationBank: []
+  citationBank: [],
+  figures: []
 };
 
 const EMPTY_EVIDENCE_DRAFT = { type: 'claim', text: '', supports: '', key: '' };
@@ -145,6 +147,14 @@ function App() {
   const [findingErrors, setFindingErrors] = useState({});
   const [evidenceDraft, setEvidenceDraft] = useState(EMPTY_EVIDENCE_DRAFT);
 
+  const [figurePlanStatus, setFigurePlanStatus] = useState('idle');
+  const [figureSuggestions, setFigureSuggestions] = useState([]);
+  const [selectedSuggestionId, setSelectedSuggestionId] = useState(null);
+  const [figureGenStatus, setFigureGenStatus] = useState('idle');
+  const [generatedFigure, setGeneratedFigure] = useState(null);
+  const figurePlanAbortRef = useRef(null);
+  const figureGenAbortRef = useRef(null);
+
   const abortRef = useRef(null);
   const gapAbortRef = useRef(null);
   const reviewAbortRef = useRef(null);
@@ -193,6 +203,7 @@ function App() {
   }, [literature.papers, selectedPaperIds]);
   const activeSelectedPaper = selectedPapers.find((paper) => paperStableId(paper) === activeSelectedPaperId) || selectedPapers[0] || null;
   const activeGap = (gapResult.rankedGaps || []).find((gap) => gap.id === selectedGapId) || null;
+  const selectedSuggestion = figureSuggestions.find(s => s.id === selectedSuggestionId) || null;
   const latestReviewRound = reviewCycle.rounds[reviewCycle.rounds.length - 1] || null;
   const selectedCritiques = (latestReviewRound?.critiques || []).filter((critique) => reviewCycle.selectedCritiqueIds.includes(critique.id));
 
@@ -232,6 +243,9 @@ function App() {
     setLatexEditorValue('');
     setSaves([]);
     setSavesOpen(false);
+    setFigureSuggestions([]);
+    setSelectedSuggestionId(null);
+    setGeneratedFigure(null);
     localStorage.removeItem(SAVES_KEY);
     localStorage.removeItem(MEMORY_KEY);
   }, [user, authLoading]);
@@ -682,6 +696,105 @@ function App() {
     setRunLog((current) => [...current, logEntry('Citations', `Inserted \\cite{${ev.citationKey}}`)]);
   }
 
+  async function runFigurePlanner() {
+    if (!result?.proposalLatex) return;
+    figurePlanAbortRef.current?.abort();
+    const controller = new AbortController();
+    figurePlanAbortRef.current = controller;
+    setFigurePlanStatus('running');
+    setFigureSuggestions([]);
+    setSelectedSuggestionId(null);
+    setGeneratedFigure(null);
+    setError('');
+    try {
+      const data = await postJson('/api/figures/plan', {
+        project,
+        proposalLatex: result.proposalLatex,
+        evaluationReport: result?.evaluationReport || '',
+        reviewerCritiques: (latestReviewRound?.critiques || [])
+      }, controller.signal);
+      setFigureSuggestions(data.suggestions || []);
+      setRunLog(c => [...c, logEntry('Figures', `${data.suggestions?.length ?? 0} figure suggestions generated`)]);
+    } catch (err) {
+      if (isAbortError(err)) return;
+      setError(readError(err));
+    } finally {
+      setFigurePlanStatus('idle');
+      figurePlanAbortRef.current = null;
+    }
+  }
+
+  async function generateFigureLatex(suggestion) {
+    figureGenAbortRef.current?.abort();
+    const controller = new AbortController();
+    figureGenAbortRef.current = controller;
+    setFigureGenStatus('running');
+    setGeneratedFigure(null);
+    setError('');
+    try {
+      const data = await postJson('/api/figures/generate', {
+        project,
+        proposalLatex: result?.proposalLatex || '',
+        suggestion
+      }, controller.signal);
+      const record = {
+        id: suggestion.id,
+        type: suggestion.type,
+        title: suggestion.title,
+        caption: data.caption,
+        targetSection: data.targetSection,
+        latex: data.figureLatex,
+        inserted: false,
+        createdAt: new Date().toISOString()
+      };
+      setGeneratedFigure({ ...data, figureId: suggestion.id });
+      setProject(c => ({ ...c, figures: [...(c.figures || []).filter(f => f.id !== suggestion.id), record] }));
+      setRunLog(c => [...c, logEntry('Figures', `Generated: "${suggestion.title}"`)]);
+    } catch (err) {
+      if (isAbortError(err)) return;
+      setError(readError(err));
+    } finally {
+      setFigureGenStatus('idle');
+      figureGenAbortRef.current = null;
+    }
+  }
+
+  function insertFigure(generated) {
+    let latex = latexEditorValue;
+
+    // Ensure TikZ packages exist in preamble
+    if (!latex.includes('\\usepackage{tikz}')) {
+      const beginDoc = latex.indexOf('\\begin{document}');
+      if (beginDoc !== -1) {
+        latex = latex.slice(0, beginDoc) +
+          '\\usepackage{tikz}\n\\usetikzlibrary{arrows.meta, positioning, shapes.geometric}\n' +
+          latex.slice(beginDoc);
+      }
+    }
+
+    // Find target section; insert figure before the NEXT section or \end{document}
+    const sectionMatches = [...latex.matchAll(/\\section\{([^}]+)\}/g)];
+    const targetIdx = sectionMatches.findIndex(m =>
+      m[1].toLowerCase().includes((generated.targetSection || '').toLowerCase())
+    );
+    let insertPos;
+    if (targetIdx !== -1 && sectionMatches[targetIdx + 1]) {
+      insertPos = sectionMatches[targetIdx + 1].index;
+    } else {
+      insertPos = latex.lastIndexOf('\\end{document}');
+      if (insertPos === -1) insertPos = latex.length;
+    }
+
+    const updated = latex.slice(0, insertPos) + '\n\n' + generated.figureLatex + '\n\n' + latex.slice(insertPos);
+    setLatexEditorValue(updated);
+    setResult(c => ({ ...c, proposalLatex: updated }));
+    setProject(c => ({
+      ...c,
+      figures: (c.figures || []).map(f => f.id === generated.figureId ? { ...f, inserted: true } : f)
+    }));
+    setRunLog(c => [...c, logEntry('Figures', `Inserted figure into ${generated.targetSection} — click Update PDF`)]);
+  }
+
   function removeFromBank(id) {
     if (!window.confirm('Remove this evidence entry from the citation bank?')) return;
     setProject(current => ({
@@ -1125,7 +1238,7 @@ function App() {
     setFindingLinks(snapshot.findingLinks || {});
     setAdoptedFindings(snapshot.adoptedFindings || {});
     setRunLog(Array.isArray(snapshot.runLog) ? snapshot.runLog : []);
-    setActiveTab(['evaluation', 'matrix', 'refine', 'citations'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
+    setActiveTab(['evaluation', 'matrix', 'refine', 'citations', 'figures'].includes(snapshot.activeTab) ? snapshot.activeTab : 'evaluation');
     setSuggestionIndex(Number(snapshot.suggestionIndex || 0));
     setDecisionIndex(Number(snapshot.decisionIndex || 0));
     setActiveStage(Number.isFinite(Number(snapshot.activeStage)) ? Number(snapshot.activeStage) : 0);
@@ -1873,7 +1986,7 @@ function App() {
               <section className="workflow-panel review-panel">
                 <div className="artifact-toolbar">
                   <nav className="tabs" aria-label="Review artifacts">
-                    {[['evaluation', ListChecks, 'Evaluation'], ['matrix', ClipboardCheck, 'Matrix'], ['refine', PenLine, 'Refine'], ['citations', BookMarked, 'Citations']].map(([id, Icon, label]) => (
+                    {[['evaluation', ListChecks, 'Evaluation'], ['matrix', ClipboardCheck, 'Matrix'], ['refine', PenLine, 'Refine'], ['citations', BookMarked, 'Citations'], ['figures', Image, 'Figures']].map(([id, Icon, label]) => (
                       <button
                         key={id}
                         className={activeTab === id ? 'tab active' : 'tab'}
@@ -2218,6 +2331,83 @@ function App() {
                         <p className="citation-empty">Run Citation Review to analyse which claims in your proposal are supported, need citations, or are unsupported.</p>
                       )}
                     </section>
+                  </div>
+                ) : activeTab === 'figures' ? (
+                  <div className="figure-panel">
+                    <div className="figure-plan-header">
+                      <div>
+                        <h3>Figure Planner</h3>
+                        <p className="figure-plan-hint">Suggests meaningful proposal figures — methodology diagrams, timelines, evaluation pipelines — without inventing results.</p>
+                      </div>
+                      <div className="deck-actions">
+                        <button className="secondary" type="button" disabled={figurePlanStatus !== 'idle' || !result?.proposalLatex} onClick={runFigurePlanner}>
+                          {figurePlanStatus === 'running' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Image size={16} aria-hidden="true" />}
+                          {figurePlanStatus === 'running' ? 'Analysing…' : 'Suggest Figures'}
+                        </button>
+                        {figurePlanStatus === 'running' && (
+                          <button className="secondary" type="button" onClick={() => figurePlanAbortRef.current?.abort()}>
+                            <X size={16} aria-hidden="true" /> Cancel
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {figureSuggestions.length > 0 ? (
+                      <ul className="figure-suggestion-list">
+                        {figureSuggestions.map(s => {
+                          const isSelected = selectedSuggestionId === s.id;
+                          const isInserted = (project.figures || []).find(f => f.id === s.id)?.inserted;
+                          return (
+                            <li key={s.id} className={`figure-suggestion-card${isSelected ? ' selected' : ''}`} onClick={() => setSelectedSuggestionId(isSelected ? null : s.id)}>
+                              <div className="figure-card-top">
+                                <span className={`figure-type-badge type-${s.type}`}>{s.type.replace(/_/g, ' ')}</span>
+                                <span className={`severity-pill ${s.confidence >= 4 ? 'sev-high' : s.confidence >= 3 ? 'sev-mid' : 'sev-low'}`}>{s.confidence}/5</span>
+                                <span className="figure-target-section">{s.targetSection}</span>
+                                {isInserted && <span className="figure-inserted-badge"><CheckCircle2 size={11} /> inserted</span>}
+                              </div>
+                              <h4 className="figure-card-title">{s.title}</h4>
+                              <p className="figure-card-reason">{s.reason}</p>
+                              <div className="figure-card-components">
+                                {(s.components || []).map((c, i) => <span key={i} className="figure-component-tag">{c}</span>)}
+                              </div>
+                              <p className="figure-card-caption"><em>Caption draft:</em> {s.captionDraft}</p>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="figure-empty">{result?.proposalLatex ? 'Click "Suggest Figures" to analyse your proposal.' : 'Generate a proposal first, then suggest figures.'}</p>
+                    )}
+
+                    {selectedSuggestion && (
+                      <div className="figure-generate-section">
+                        <div className="deck-actions">
+                          <button className="primary" type="button" disabled={figureGenStatus !== 'idle'} onClick={() => generateFigureLatex(selectedSuggestion)}>
+                            {figureGenStatus === 'running' ? <Loader2 className="spin" size={16} aria-hidden="true" /> : <Image size={16} aria-hidden="true" />}
+                            {figureGenStatus === 'running' ? 'Generating…' : `Generate "${selectedSuggestion.title}"`}
+                          </button>
+                          {figureGenStatus === 'running' && (
+                            <button className="secondary" type="button" onClick={() => figureGenAbortRef.current?.abort()}>
+                              <X size={16} aria-hidden="true" /> Cancel
+                            </button>
+                          )}
+                        </div>
+
+                        {generatedFigure && generatedFigure.figureId === selectedSuggestion.id && (
+                          <div className="figure-generated">
+                            <div className="figure-generated-meta">
+                              <span className="figure-generated-section">→ {generatedFigure.targetSection}</span>
+                              {generatedFigure.insertionHint && <span className="figure-generated-hint">{generatedFigure.insertionHint}</span>}
+                            </div>
+                            <pre className="figure-latex-preview"><code>{generatedFigure.figureLatex}</code></pre>
+                            <p className="figure-caption-preview"><em>Caption:</em> {generatedFigure.caption}</p>
+                            <button className="primary" type="button" onClick={() => insertFigure(generatedFigure)}>
+                              Insert into Proposal
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <>

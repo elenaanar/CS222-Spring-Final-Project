@@ -1189,7 +1189,9 @@ async function callGemini({ systemPrompt, payload, model, temperature }) {
   const data = await response.json();
 
   if (!response.ok) {
-    throw new Error(data?.error?.message || `Gemini API returned ${response.status}`);
+    const msg = data?.error?.message || `Gemini API returned ${response.status}`;
+    log('callGemini', `API error ${response.status}: ${msg}`);
+    throw new Error(msg);
   }
 
   const content = data?.candidates?.[0]?.content?.parts
@@ -1304,6 +1306,8 @@ function buildLocalProposalLatex(project) {
 \usepackage[hidelinks]{hyperref}
 \usepackage{enumitem}
 \setlist{nosep}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric}
 \title{${escapeLatex(title)}}
 \author{}
 \date{}
