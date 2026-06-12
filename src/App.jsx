@@ -135,7 +135,7 @@ function App() {
   const [latexEditorValue, setLatexEditorValue] = useState('');
   const [latexExportStatus, setLatexExportStatus] = useState('idle');
 
-  const { user, loading: authLoading, login, logout } = useAuth();
+  const { user, loading: authLoading, login, logout, authError } = useAuth();
   const [savedFlash, setSavedFlash] = useState(false);
 
   const litCtx = (proj) => proj.literatureContext || EMPTY_LITERATURE_CONTEXT;
@@ -964,10 +964,13 @@ function App() {
               </button>
             </div>
           ) : (
-            <button className="nav-signin-btn" type="button" onClick={login} title="Sign in with Google">
-              <UserCircle size={30} strokeWidth={1.5} />
-              <span>Sign in</span>
-            </button>
+            <div className="nav-signin-wrap">
+              <button className="nav-signin-btn" type="button" onClick={login} title="Sign in with Google">
+                <UserCircle size={30} strokeWidth={1.5} />
+                <span>Sign in</span>
+              </button>
+              {authError && <span className="nav-auth-error" title={authError}>!</span>}
+            </div>
           )}
         </div>
       </header>

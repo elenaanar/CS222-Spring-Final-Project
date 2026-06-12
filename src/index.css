@@ -140,6 +140,27 @@ button {
   border-color: #8fadb6;
 }
 
+.nav-signin-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-auth-error {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #e74c3c;
+  color: #fff;
+  font-size: 0.7rem;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: help;
+  flex-shrink: 0;
+}
+
 h1,
 h2,
 h3,
